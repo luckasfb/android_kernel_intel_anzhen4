@@ -1,0 +1,4 @@
+kernel/drivers/external_drivers/drivers/hsu/mfd_core.ko
+kernel/drivers/external_drivers/drivers/hsu/mfd_dma.ko
+kernel/drivers/external_drivers/drivers/hsu/mfd_pci.ko
+kernel/drivers/external_drivers/drivers/hsu/mfd_plat.ko

@@ -1,0 +1,5 @@
+kernel/drivers/external_drivers/camera/drivers/media/i2c/imx/imx1x5.ko
+kernel/drivers/external_drivers/camera/drivers/media/i2c/ov2722.ko
+kernel/drivers/external_drivers/camera/drivers/media/i2c/libmsrlisthelper.ko
+kernel/drivers/external_drivers/camera/drivers/media/i2c/lm3554.ko
+kernel/drivers/external_drivers/camera/drivers/media/i2c/lm3642.ko

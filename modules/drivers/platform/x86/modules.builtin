@@ -1,0 +1,3 @@
+kernel/drivers/external_drivers/drivers/platform/x86/intel_mid_osnib_ilb.ko
+kernel/drivers/external_drivers/drivers/platform/x86/intel_mid_osip.ko
+kernel/drivers/external_drivers/drivers/platform/x86/reboot_target_uefi.ko
