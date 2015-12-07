@@ -1,5 +1,0 @@
-kernel/drivers/external_drivers/drivers/hwmon/intel_mid_vdd.ko
-kernel/drivers/external_drivers/drivers/hwmon/psh_ia_common.ko
-kernel/drivers/external_drivers/drivers/hwmon/psh_byt.ko
-kernel/drivers/external_drivers/drivers/hwmon/sensor_general.ko
-kernel/drivers/external_drivers/drivers/hwmon/sensor_rawdata_proc.ko

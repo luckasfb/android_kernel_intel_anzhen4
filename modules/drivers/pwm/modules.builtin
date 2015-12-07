@@ -1,3 +1,0 @@
-kernel/drivers/external_drivers/drivers/pwm/pwm_byt_core.ko
-kernel/drivers/external_drivers/drivers/pwm/pwm_byt_pci.ko
-kernel/drivers/external_drivers/drivers/pwm/pwm_byt_platdrv.ko
