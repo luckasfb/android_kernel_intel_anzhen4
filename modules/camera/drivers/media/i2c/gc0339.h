@@ -1,7 +1,7 @@
 /*
  * Support for gc0339 Camera Sensor.
  *
- * Copyright (c) 2012 Intel Corporation. All Rights Reserved.
+ * Copyright (c) 2013 ASUSTeK COMPUTER INC. All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License version
@@ -19,9 +19,8 @@
  *
  */
 
-
-#ifndef __GC0339_H__
-#define __GC0339_H__
+#ifndef __A1040_H__
+#define __A1040_H__
 
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -33,12 +32,14 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-chip-ident.h>
 #include <linux/v4l2-mediabus.h>
-#include <media/v4l2-ctrls.h>
 #include <media/media-entity.h>
 #include <linux/atomisp_platform.h>
 #include <linux/atomisp.h>
 
 #define V4L2_IDENT_GC0339 8245
+
+#define MT9P111_REV3
+#define FULLINISUPPORT
 
 /* #defines for register writes and register array processing */
 #define MISENSOR_8BIT		1
@@ -82,8 +83,12 @@
 #define MISENSOR_COARSE_INTEGRATION_TIME_H 0x03
 #define MISENSOR_COARSE_INTEGRATION_TIME_L 0x04
 
-/*registers*/
-#define REG_V_START                     0x06
+//registers
+#define REG_SW_RESET                    0x301A
+#define REG_SW_STREAM                   0xDC00
+#define REG_SCCB_CTRL                   0x3100
+#define REG_SC_CMMN_CHIP_ID             0x0000
+#define REG_V_START                     0x06 
 #define REG_H_START                     0x08
 #define REG_WIDTH_H                      0x0B
 #define REG_WIDTH_L                      0x0C
@@ -93,9 +98,15 @@
 #define REG_DUMMY_H                     0x0F
 #define REG_H_DUMMY_L                     0x01
 #define REG_V_DUMMY_L                     0x02
+#define REG_PIXEL_CLK                   0xc808
+#define REG_TIMING_VTS                  0xc812
+#define REG_TIMING_HTS                  0xc814
 #define REG_EXPO_COARSE                 0x03
-#define REG_GLOBAL_GAIN                 0x50
-#define REG_GAIN                        0x51
+#define REG_EXPO_FINE                   0x3014
+#define REG_GAIN                        0x50
+#define REG_ANALOGGAIN                  0x305F
+#define REG_ADDR_ACESSS                 0x098E
+#define REG_COMM_Register               0x0080
 
 #define SENSOR_DETECTED		1
 #define SENSOR_NOT_DETECTED	0
@@ -107,7 +118,7 @@
 #define MIPI_CONTROL		0x3400	/* MIPI_Control */
 #endif
 
-/*Consistent value*/
+//Consistent value
 #define VALUE_V_START                     0
 #define VALUE_H_START                     0
 #define VALUE_V_END                       480
@@ -169,7 +180,6 @@
  */
 #define GC0339_F_NUMBER_RANGE 0x180a180a
 
-#define BASE_GLOBAL_GAIN_VALUE 0x60
 /* Supported resolutions */
 enum {
 	GC0339_RES_CIF,
@@ -178,8 +188,8 @@ enum {
 
 #define GC0339_RES_VGA_SIZE_H		640
 #define GC0339_RES_VGA_SIZE_V		480
-#define GC0339_RES_CIF_SIZE_H		528 //528 //352
-#define GC0339_RES_CIF_SIZE_V		432 //432 //288
+#define GC0339_RES_CIF_SIZE_H		 	352
+#define GC0339_RES_CIF_SIZE_V			288
 #define GC0339_RES_QVGA_SIZE_H		320
 #define GC0339_RES_QVGA_SIZE_V		240
 #define GC0339_RES_QCIF_SIZE_H		176
@@ -235,17 +245,11 @@ struct gc0339_device {
 	struct v4l2_subdev sd;
 	struct media_pad pad;
 	struct v4l2_mbus_framefmt format;
-	struct v4l2_ctrl_handler ctrl_handler;
-	struct mutex input_lock; /* serialize sensor's ioctl */
 
 	struct camera_sensor_platform_data *platform_data;
 	int real_model_id;
 	int nctx;
 	int power;
-	int second_power_on_at_boot_done;
-	int once_launched;
-	int streaming;
-	unsigned int vt_pix_clk_freq_mhz;
 
 	unsigned int bus_width;
 	unsigned int mode;
@@ -284,6 +288,8 @@ struct gc0339_device {
 	char name[32];
 
 	u8 lightfreq;
+
+       struct attribute_group sensor_i2c_attribute; //Add for ATD read camera status+++
 };
 
 struct gc0339_format_struct {
@@ -331,54 +337,36 @@ struct gc0339_write_ctrl {
  * Please, keep them in ascending order.
  */
 static struct gc0339_res_struct gc0339_res[] = {
-#if 0
-{
+/*
+	{
 	.desc	= "CIF",
 	.res	= GC0339_RES_CIF,
-	.width	= 352,
-	.height	= 288,
-	.fps	= 30,
+	.width	= 368,
+	.height	= 304,
+	.fps	= 23,
 	.used	= 0,
 	.regs	= NULL,
 	.skip_frames = 1,
 
-	.pixels_per_line = 0x01F0,
-	.lines_per_frame = 0x014F,
+	.pixels_per_line = 0x0312, // consistent with regs arrays
+	.lines_per_frame = 0x0213, // consistent with regs arrays
 	.bin_factor_x = 1,
 	.bin_factor_y = 1,
 	.bin_mode = 0,
 	},
-#endif
-#if 1
-	{
-	.desc	= "550x450",
-	.res	= GC0339_RES_CIF,
-	.width	= 544,
-	.height	= 448,
-	.fps	= 30,
-	.used	= 0,
-	.regs	= NULL,
-	.skip_frames = 2,
-
-	.pixels_per_line = 0x0314,
-	.lines_per_frame = 0x0213,
-	.bin_factor_x = 1,
-	.bin_factor_y = 1,
-	.bin_mode = 0,
-	},
-#endif
+*/
 	{
 	.desc	= "VGA",
 	.res	= GC0339_RES_VGA,
 	.width	= 656,
 	.height	= 496,
-	.fps	= 30,
+	.fps	= 20,
 	.used	= 0,
 	.regs	= NULL,
 	.skip_frames = 2,
 
-	.pixels_per_line = 0x0314,
-	.lines_per_frame = 0x0213,
+	.pixels_per_line = 0x0352, // consistent with regs arrays
+	.lines_per_frame = 0x0223, // consistent with regs arrays
 	.bin_factor_x = 1,
 	.bin_factor_y = 1,
 	.bin_mode = 0,
@@ -391,7 +379,7 @@ static const struct i2c_device_id gc0339_id[] = {
 	{}
 };
 
-static struct misensor_reg const gc0339_suspend_reg[] = {
+static struct misensor_reg const gc0339_suspend[] = {
 	 {MISENSOR_TOK_TERM, 0, 0}
 };
 

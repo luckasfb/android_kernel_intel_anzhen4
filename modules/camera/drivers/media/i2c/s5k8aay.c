@@ -333,11 +333,9 @@ static int s5k8aay_set_streaming(struct v4l2_subdev *sd)
 	if (ret)
 		return ret;
 
-	if (dev->fw) {
-		ret = apply_msr_data(client, dev->fw);
-		if (ret)
-			return ret;
-	}
+	ret = apply_msr_data(client, dev->fw);
+	if (ret)
+		return ret;
 
 	ret = s5k8aay_write_array_list(sd, mode_regs, ARRAY_SIZE(mode_regs));
 	if (ret)
@@ -886,8 +884,7 @@ static int s5k8aay_remove(struct i2c_client *client)
 	v4l2_ctrl_handler_free(&dev->ctrl_handler);
 	v4l2_device_unregister_subdev(sd);
 	mutex_destroy(&dev->input_lock);
-	if (dev->fw)
-		release_msr_list(client, dev->fw);
+	release_msr_list(client, dev->fw);
 	kfree(dev);
 	return 0;
 }
@@ -896,7 +893,7 @@ static int s5k8aay_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
 {
 	struct s5k8aay_device *dev;
-	char *msr_file_name = NULL;
+	char *msr_file_name;
 	unsigned int i;
 	int ret;
 
@@ -955,16 +952,13 @@ static int s5k8aay_probe(struct i2c_client *client,
 	dev->ctrl_handler.lock = &dev->input_lock;
 	dev->sd.ctrl_handler = &dev->ctrl_handler;
 
-	if (dev->platform_data->msr_file_name)
-		msr_file_name = dev->platform_data->msr_file_name();
-	if (msr_file_name) {
-		ret = load_msr_list(client, msr_file_name, &dev->fw);
-		if (ret) {
-			s5k8aay_remove(client);
-			return ret;
-		}
-	} else
-		dev_warn(&client->dev, "%s: MSR data not available", __func__);
+	msr_file_name = dev->platform_data->msr_file_name();
+
+	ret = load_msr_list(client, msr_file_name, &dev->fw);
+	if (ret) {
+		s5k8aay_remove(client);
+		return ret;
+	}
 
 	return ret;
 }

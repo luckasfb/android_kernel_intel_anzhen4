@@ -38,21 +38,11 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/types.h>
-#ifndef CONFIG_GMIN_INTEL_MID /* FIXME! for non-gmin*/
 #include <media/v4l2-chip-ident.h>
-#endif
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include "imx.h"
 
-/*
- * The imx135 embedded data info:
- * embedded data line num: 2
- * line 0 effective data size(byte): 76
- * line 1 effective data size(byte): 113
- */
-static const uint32_t imx135_embedded_effective_size[IMX135_EMBEDDED_DATA_LINE_NUM]
-	=  {76, 113};
 
 static enum atomisp_bayer_order imx_bayer_order_mapping[] = {
 	atomisp_bayer_order_rggb,
@@ -314,28 +304,6 @@ static int __imx_nearest_fps_index(int fps,
 	return fps_index;
 }
 
-/*
- * This is to choose the nearest fps setting above the requested fps
- * fps_list should be in ascendant order.
- */
-static int __imx_above_nearest_fps_index(int fps,
-					const struct imx_fps_setting *fps_list)
-{
-	int fps_index = 0;
-	int i;
-
-	for (i = 0; i < MAX_FPS_OPTIONS_SUPPORTED; i++) {
-		if (!fps_list[i].fps)
-			break;
-		if (fps <= fps_list[i].fps) {
-			fps_index = i;
-			break;
-		}
-	}
-
-	return fps_index;
-}
-
 static int __imx_get_max_fps_index(
 				const struct imx_fps_setting *fps_settings)
 {
@@ -349,44 +317,26 @@ static int __imx_get_max_fps_index(
 	return i - 1;
 }
 
-static int imx_get_lanes(struct v4l2_subdev *sd)
-{
-	struct camera_mipi_info *imx_info = v4l2_get_subdev_hostdata(sd);
-
-	if (!imx_info)
-		return -ENOSYS;
-	if (imx_info->num_lanes < 1 || imx_info->num_lanes > 4 ||
-	    imx_info->num_lanes == 3)
-		return -EINVAL;
-
-	return imx_info->num_lanes;
-}
-
 static int __imx_update_exposure_timing(struct i2c_client *client, u16 exposure,
 			u16 llp, u16 fll)
 {
-	struct v4l2_subdev *sd = i2c_get_clientdata(client);
-	struct imx_device *dev = to_imx_sensor(sd);
 	int ret = 0;
 
 	/* Increase the VTS to match exposure + margin */
 	if (exposure > fll - IMX_INTEGRATION_TIME_MARGIN)
 		fll = exposure + IMX_INTEGRATION_TIME_MARGIN;
 
-	ret = imx_write_reg(client, IMX_16BIT,
-		dev->reg_addr->line_length_pixels, llp);
+	ret = imx_write_reg(client, IMX_16BIT, IMX_LINE_LENGTH_PIXELS, llp);
 	if (ret)
 		return ret;
 
-	ret = imx_write_reg(client, IMX_16BIT,
-		dev->reg_addr->frame_length_lines, fll);
+	ret = imx_write_reg(client, IMX_16BIT, IMX_FRAME_LENGTH_LINES, fll);
 	if (ret)
 		return ret;
 
 	if (exposure)
 		ret = imx_write_reg(client, IMX_16BIT,
-			dev->reg_addr->coarse_integration_time, exposure);
-
+			IMX_COARSE_INTEGRATION_TIME, exposure);
 	return ret;
 }
 
@@ -397,7 +347,7 @@ static int __imx_update_gain(struct v4l2_subdev *sd, u16 gain)
 	int ret;
 
 	/* set global gain */
-	ret = imx_write_reg(client, IMX_8BIT, dev->reg_addr->global_gain, gain);
+	ret = imx_write_reg(client, IMX_8BIT, IMX_GLOBAL_GAIN, gain);
 	if (ret)
 		return ret;
 
@@ -410,26 +360,19 @@ static int __imx_update_gain(struct v4l2_subdev *sd, u16 gain)
 
 static int __imx_update_digital_gain(struct i2c_client *client, u16 digitgain)
 {
-	struct v4l2_subdev *sd = i2c_get_clientdata(client);
-	struct imx_device *dev = to_imx_sensor(sd);
 	struct imx_write_buffer digit_gain;
 
-	digit_gain.addr = cpu_to_be16(dev->reg_addr->dgc_adj);
+	digit_gain.addr = cpu_to_be16(IMX_DGC_ADJ);
 	digit_gain.data[0] = (digitgain >> 8) & 0xFF;
 	digit_gain.data[1] = digitgain & 0xFF;
+	digit_gain.data[2] = (digitgain >> 8) & 0xFF;
+	digit_gain.data[3] = digitgain & 0xFF;
+	digit_gain.data[4] = (digitgain >> 8) & 0xFF;
+	digit_gain.data[5] = digitgain & 0xFF;
+	digit_gain.data[6] = (digitgain >> 8) & 0xFF;
+	digit_gain.data[7] = digitgain & 0xFF;
 
-	if (dev->sensor_id == IMX219_ID) {
-		return imx_i2c_write(client, IMX219_DGC_LEN, (u8 *)&digit_gain);
-	} else {
-		digit_gain.data[2] = (digitgain >> 8) & 0xFF;
-		digit_gain.data[3] = digitgain & 0xFF;
-		digit_gain.data[4] = (digitgain >> 8) & 0xFF;
-		digit_gain.data[5] = digitgain & 0xFF;
-		digit_gain.data[6] = (digitgain >> 8) & 0xFF;
-		digit_gain.data[7] = digitgain & 0xFF;
-		return imx_i2c_write(client, IMX_DGC_LEN, (u8 *)&digit_gain);
-	}
-	return 0;
+	return imx_i2c_write(client, IMX_DGC_LEN, (u8 *)&digit_gain);
 }
 
 static int imx_set_exposure_gain(struct v4l2_subdev *sd, u16 coarse_itg,
@@ -437,8 +380,6 @@ static int imx_set_exposure_gain(struct v4l2_subdev *sd, u16 coarse_itg,
 {
 	struct imx_device *dev = to_imx_sensor(sd);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	int lanes = imx_get_lanes(sd);
-	unsigned int digitgain_scaled;
 	int ret = 0;
 
 	/* Validate exposure:  cannot exceed VTS-4 where VTS is 16bit */
@@ -447,21 +388,10 @@ static int imx_set_exposure_gain(struct v4l2_subdev *sd, u16 coarse_itg,
 	/* Validate gain: must not exceed maximum 8bit value */
 	gain = clamp_t(u16, gain, 0, IMX_MAX_GLOBAL_GAIN_SUPPORTED);
 
-	mutex_lock(&dev->input_lock);
-
-	/* For imx175, setting gain must be delayed by one */
-	if ((dev->sensor_id == IMX175_ID) && dev->digital_gain)
-		digitgain_scaled = dev->digital_gain;
-	else
-		digitgain_scaled = digitgain;
-	/* imx132 with two lanes needs more gain to saturate at max */
-	if (dev->sensor_id == IMX132_ID && lanes > 1) {
-		digitgain_scaled *= IMX132_2LANES_GAINFACT;
-		digitgain_scaled >>= IMX132_2LANES_GAINFACT_SHIFT;
-	}
 	/* Validate digital gain: must not exceed 12 bit value*/
-	digitgain_scaled = clamp_t(unsigned int, digitgain_scaled,
-				   0, IMX_MAX_DIGITAL_GAIN_SUPPORTED);
+	digitgain = clamp_t(u16, digitgain, 0, IMX_MAX_DIGITAL_GAIN_SUPPORTED);
+
+	mutex_lock(&dev->input_lock);
 
 	ret = __imx_update_exposure_timing(client, coarse_itg,
 			dev->pixels_per_line, dev->lines_per_frame);
@@ -477,7 +407,10 @@ static int imx_set_exposure_gain(struct v4l2_subdev *sd, u16 coarse_itg,
 		goto out;
 	dev->gain = gain;
 
-	ret = __imx_update_digital_gain(client, digitgain_scaled);
+	if ((dev->sensor_id == IMX175_ID) && dev->digital_gain)
+		ret = __imx_update_digital_gain(client, dev->digital_gain);
+	else
+		ret = __imx_update_digital_gain(client, digitgain);
 	if (ret)
 		goto out;
 	dev->digital_gain = digitgain;
@@ -533,36 +466,17 @@ static int __imx_init(struct v4l2_subdev *sd, u32 val)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	struct imx_device *dev = to_imx_sensor(sd);
-	int lanes = imx_get_lanes(sd);
-	int ret;
 
 	if (dev->sensor_id == IMX_ID_DEFAULT)
 		return 0;
 
-	/* The default is no flip at sensor initialization */
-	dev->h_flip->cur.val = 0;
-	dev->v_flip->cur.val = 0;
 	/* Sets the default FPS */
 	dev->fps_index = 0;
 	dev->curr_res_table = dev->mode_tables->res_preview;
 	dev->entries_curr_table = dev->mode_tables->n_res_preview;
 
-	ret = imx_write_reg_array(client, dev->mode_tables->init_settings);
-	if (ret)
-		return ret;
-
-	if (dev->sensor_id == IMX132_ID && lanes > 0) {
-		static const u8 imx132_rglanesel[] = {
-			IMX132_RGLANESEL_1LANE,		/* 1 lane */
-			IMX132_RGLANESEL_2LANES,	/* 2 lanes */
-			IMX132_RGLANESEL_1LANE,		/* undefined */
-			IMX132_RGLANESEL_4LANES,	/* 4 lanes */
-		};
-		ret = imx_write_reg(client, IMX_8BIT,
-				IMX132_RGLANESEL, imx132_rglanesel[lanes - 1]);
-	}
-
-	return ret;
+	return imx_write_reg_array(client,
+			dev->mode_tables->init_settings);
 }
 
 static int imx_init(struct v4l2_subdev *sd, u32 val)
@@ -688,7 +602,7 @@ static int imx_s_power(struct v4l2_subdev *sd, int on)
 
 	return ret;
 }
-#ifndef CONFIG_GMIN_INTEL_MID /* FIXME! for non-gmin*/
+
 static int imx_g_chip_ident(struct v4l2_subdev *sd,
 				struct v4l2_dbg_chip_ident *chip)
 {
@@ -701,14 +615,13 @@ static int imx_g_chip_ident(struct v4l2_subdev *sd,
 
 	return 0;
 }
-#endif
+
 static int imx_get_intg_factor(struct i2c_client *client,
 				struct camera_mipi_info *info,
 				const struct imx_reg *reglist)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct imx_device *dev = to_imx_sensor(sd);
-	int lanes = imx_get_lanes(sd);
 	u32 vt_pix_clk_div;
 	u32 vt_sys_clk_div;
 	u32 pre_pll_clk_div;
@@ -734,28 +647,20 @@ static int imx_get_intg_factor(struct i2c_client *client,
 		return ret;
 	vt_pix_clk_div = data[0] & IMX_MASK_5BIT;
 
-	if (dev->sensor_id == IMX132_ID || dev->sensor_id == IMX208_ID) {
-		static const int rgpltd[] = { 2, 4, 1, 1 };
-		ret = imx_read_reg(client, 1, IMX132_208_VT_RGPLTD, data);
-		if (ret)
-			return ret;
-		vt_sys_clk_div = rgpltd[data[0] & IMX_MASK_2BIT];
-	} else {
+	if (dev->sensor_id == IMX132_ID)
+		ret = imx_read_reg(client, 1, IMX132_VT_RGPLTD, data);
+	else
 		ret = imx_read_reg(client, 1, IMX_VT_SYS_CLK_DIV, data);
-		if (ret)
-			return ret;
-		vt_sys_clk_div = data[0] & IMX_MASK_2BIT;
-	}
+	if (ret)
+		return ret;
+	vt_sys_clk_div = data[0] & IMX_MASK_2BIT;
 	ret = imx_read_reg(client, 1, IMX_PRE_PLL_CLK_DIV, data);
 	if (ret)
 		return ret;
 	pre_pll_clk_div = data[0] & IMX_MASK_4BIT;
-
 	ret = imx_read_reg(client, 2,
-		(dev->sensor_id == IMX132_ID ||
-		 dev->sensor_id == IMX219_ID ||
-		 dev->sensor_id == IMX208_ID) ?
-		IMX132_208_219_PLL_MULTIPLIER : IMX_PLL_MULTIPLIER, data);
+		(dev->sensor_id == IMX132_ID) ?
+		IMX132_PLL_MULTIPLIER : IMX_PLL_MULTIPLIER, data);
 	if (ret)
 		return ret;
 	pll_multiplier = data[0] & IMX_MASK_11BIT;
@@ -768,41 +673,38 @@ static int imx_get_intg_factor(struct i2c_client *client,
 	coarse_integration_time_max_margin = data[1];
 
 	/* Get the cropping and output resolution to ISP for this mode. */
-	ret =  imx_read_reg(client, 2, dev->reg_addr->horizontal_start_h, data);
+	ret =  imx_read_reg(client, 2, IMX_HORIZONTAL_START_H, data);
 	if (ret)
 		return ret;
 	buf->crop_horizontal_start = data[0];
 
-	ret = imx_read_reg(client, 2, dev->reg_addr->vertical_start_h, data);
+	ret = imx_read_reg(client, 2, IMX_VERTICAL_START_H, data);
 	if (ret)
 		return ret;
 	buf->crop_vertical_start = data[0];
 
-	ret = imx_read_reg(client, 2, dev->reg_addr->horizontal_end_h, data);
+	ret = imx_read_reg(client, 2, IMX_HORIZONTAL_END_H, data);
 	if (ret)
 		return ret;
 	buf->crop_horizontal_end = data[0];
 
-	ret = imx_read_reg(client, 2, dev->reg_addr->vertical_end_h, data);
+	ret = imx_read_reg(client, 2, IMX_VERTICAL_END_H, data);
 	if (ret)
 		return ret;
 	buf->crop_vertical_end = data[0];
 
-	ret = imx_read_reg(client, 2,
-		dev->reg_addr->horizontal_output_size_h, data);
+	ret = imx_read_reg(client, 2, IMX_HORIZONTAL_OUTPUT_SIZE_H, data);
 	if (ret)
 		return ret;
 	buf->output_width = data[0];
 
-	ret = imx_read_reg(client, 2,
-		dev->reg_addr->vertical_output_size_h, data);
+	ret = imx_read_reg(client, 2, IMX_VERTICAL_OUTPUT_SIZE_H, data);
 	if (ret)
 		return ret;
 	buf->output_height = data[0];
 
 	memset(data, 0, IMX_INTG_BUF_COUNT * sizeof(u16));
-	if (dev->sensor_id == IMX132_ID || dev->sensor_id == IMX208_ID ||
-		dev->sensor_id == IMX219_ID)
+	if (dev->sensor_id == IMX132_ID)
 		read_mode = 0;
 	else {
 		ret = imx_read_reg(client, 1, IMX_READ_MODE, data);
@@ -815,14 +717,8 @@ static int imx_get_intg_factor(struct i2c_client *client,
 	if (div == 0)
 		return -EINVAL;
 
-	if (dev->sensor_id == IMX132_ID || dev->sensor_id == IMX208_ID)
-		vt_pix_clk_freq_mhz = ext_clk_freq_hz / div;
-	else
-		vt_pix_clk_freq_mhz = 2 * ext_clk_freq_hz / div;
-
+	vt_pix_clk_freq_mhz = 2 * ext_clk_freq_hz / div;
 	vt_pix_clk_freq_mhz *= pll_multiplier;
-	if (dev->sensor_id == IMX132_ID && lanes > 0)
-		vt_pix_clk_freq_mhz *= lanes;
 
 	dev->vt_pix_clk_freq_mhz = vt_pix_clk_freq_mhz;
 
@@ -838,8 +734,7 @@ static int imx_get_intg_factor(struct i2c_client *client,
 	buf->line_length_pck = dev->pixels_per_line;
 	buf->read_mode = read_mode;
 
-	if (dev->sensor_id == IMX132_ID || dev->sensor_id == IMX208_ID ||
-		dev->sensor_id == IMX219_ID) {
+	if (dev->sensor_id == IMX132_ID) {
 		buf->binning_factor_x = 1;
 		buf->binning_factor_y = 1;
 	} else {
@@ -871,49 +766,22 @@ static int imx_get_intg_factor(struct i2c_client *client,
 static int imx_q_exposure(struct v4l2_subdev *sd, s32 *value)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	struct imx_device *dev = to_imx_sensor(sd);
 	u16 coarse;
 	int ret;
 
 	/* the fine integration time is currently not calculated */
 	ret = imx_read_reg(client, IMX_16BIT,
-		dev->reg_addr->coarse_integration_time, &coarse);
+			       IMX_COARSE_INTEGRATION_TIME, &coarse);
 	*value = coarse;
 
 	return ret;
 }
 
-static int imx_test_pattern(struct v4l2_subdev *sd)
+static int imx_test_pattern(struct v4l2_subdev *sd, s32 value)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	struct imx_device *dev = to_imx_sensor(sd);
-	int ret;
 
-	if (dev->power == 0)
-		return 0;
-
-	ret = imx_write_reg(client, IMX_16BIT, IMX_TEST_PATTERN_COLOR_R,
-		(u16)(dev->tp_r->val >> 22));
-	if (ret)
-		return ret;
-
-	ret = imx_write_reg(client, IMX_16BIT, IMX_TEST_PATTERN_COLOR_GR,
-		(u16)(dev->tp_gr->val >> 22));
-	if (ret)
-		return ret;
-
-	ret = imx_write_reg(client, IMX_16BIT, IMX_TEST_PATTERN_COLOR_GB,
-		(u16)(dev->tp_gb->val >> 22));
-	if (ret)
-		return ret;
-
-	ret = imx_write_reg(client, IMX_16BIT, IMX_TEST_PATTERN_COLOR_B,
-		(u16)(dev->tp_b->val >> 22));
-	if (ret)
-		return ret;
-
-	return imx_write_reg(client, IMX_16BIT, IMX_TEST_PATTERN_MODE,
-		(u16)(dev->tp_mode->val));
+	return imx_write_reg(client, IMX_16BIT, IMX_TEST_PATTERN_MODE, value);
 }
 
 static enum v4l2_mbus_pixelcode
@@ -940,24 +808,18 @@ static int imx_v_flip(struct v4l2_subdev *sd, s32 value)
 	int ret;
 	u16 val;
 
-	if (dev->power == 0)
-		return -EIO;
-
-	ret = imx_write_reg_array(client, dev->param_hold);
+	ret = imx_write_reg_array(client, imx_param_hold);
 	if (ret)
 		return ret;
-
-	ret = imx_read_reg(client, IMX_8BIT,
-		dev->reg_addr->img_orientation, &val);
+	ret = imx_read_reg(client, IMX_8BIT, IMX_IMG_ORIENTATION, &val);
 	if (ret)
 		return ret;
 	if (value)
 		val |= IMX_VFLIP_BIT;
 	else
 		val &= ~IMX_VFLIP_BIT;
-
 	ret = imx_write_reg(client, IMX_8BIT,
-		dev->reg_addr->img_orientation, val);
+			IMX_IMG_ORIENTATION, val);
 	if (ret)
 		return ret;
 
@@ -969,7 +831,7 @@ static int imx_v_flip(struct v4l2_subdev *sd, s32 value)
 			imx_info->raw_bayer_order);
 	}
 
-	return imx_write_reg_array(client, dev->param_update);
+	return imx_write_reg_array(client, imx_param_update);
 }
 
 static int imx_h_flip(struct v4l2_subdev *sd, s32 value)
@@ -980,14 +842,10 @@ static int imx_h_flip(struct v4l2_subdev *sd, s32 value)
 	int ret;
 	u16 val;
 
-	if (dev->power == 0)
-		return -EIO;
-
-	ret = imx_write_reg_array(client, dev->param_hold);
+	ret = imx_write_reg_array(client, imx_param_hold);
 	if (ret)
 		return ret;
-	ret = imx_read_reg(client, IMX_8BIT,
-		dev->reg_addr->img_orientation, &val);
+	ret = imx_read_reg(client, IMX_8BIT, IMX_IMG_ORIENTATION, &val);
 	if (ret)
 		return ret;
 	if (value)
@@ -995,7 +853,7 @@ static int imx_h_flip(struct v4l2_subdev *sd, s32 value)
 	else
 		val &= ~IMX_HFLIP_BIT;
 	ret = imx_write_reg(client, IMX_8BIT,
-		dev->reg_addr->img_orientation, val);
+			IMX_IMG_ORIENTATION, val);
 	if (ret)
 		return ret;
 
@@ -1007,7 +865,7 @@ static int imx_h_flip(struct v4l2_subdev *sd, s32 value)
 		imx_info->raw_bayer_order);
 	}
 
-	return imx_write_reg_array(client, dev->param_update);
+	return imx_write_reg_array(client, imx_param_update);
 }
 
 static int imx_g_focal(struct v4l2_subdev *sd, s32 *val)
@@ -1128,365 +986,251 @@ int imx_t_vcm_timing(struct v4l2_subdev *sd, s32 value)
 	return 0;
 }
 
-static int imx_s_ctrl(struct v4l2_ctrl *ctrl)
+struct imx_control imx_controls[] = {
+	{
+		.qc = {
+			.id = V4L2_CID_EXPOSURE_ABSOLUTE,
+			.type = V4L2_CTRL_TYPE_INTEGER,
+			.name = "exposure",
+			.minimum = 0x0,
+			.maximum = 0xffff,
+			.step = 0x01,
+			.default_value = 0x00,
+			.flags = 0,
+		},
+		.query = imx_q_exposure,
+	},
+	{
+		.qc = {
+			.id = V4L2_CID_TEST_PATTERN,
+			.type = V4L2_CTRL_TYPE_INTEGER,
+			.name = "Test pattern",
+			.minimum = 0,
+			.maximum = 0xffff,
+			.step = 1,
+			.default_value = 0,
+		},
+		.tweak = imx_test_pattern,
+	},
+	{
+		.qc = {
+			.id = V4L2_CID_VFLIP,
+			.type = V4L2_CTRL_TYPE_BOOLEAN,
+			.name = "Flip",
+			.minimum = 0,
+			.maximum = 1,
+			.step = 1,
+			.default_value = 0,
+		},
+		.tweak = imx_v_flip,
+	},
+	{
+		.qc = {
+			.id = V4L2_CID_HFLIP,
+			.type = V4L2_CTRL_TYPE_BOOLEAN,
+			.name = "Mirror",
+			.minimum = 0,
+			.maximum = 1,
+			.step = 1,
+			.default_value = 0,
+		},
+		.tweak = imx_h_flip,
+	},
+	{
+		.qc = {
+			.id = V4L2_CID_FOCUS_ABSOLUTE,
+			.type = V4L2_CTRL_TYPE_INTEGER,
+			.name = "focus move absolute",
+			.minimum = 0,
+			.maximum = IMX_MAX_FOCUS_POS,
+			.step = 1,
+			.default_value = 0,
+			.flags = 0,
+		},
+		.tweak = imx_t_focus_abs,
+		.query = imx_q_focus_abs,
+	},
+	{
+		.qc = {
+			.id = V4L2_CID_FOCUS_RELATIVE,
+			.type = V4L2_CTRL_TYPE_INTEGER,
+			.name = "focus move relative",
+			.minimum = IMX_MAX_FOCUS_NEG,
+			.maximum = IMX_MAX_FOCUS_POS,
+			.step = 1,
+			.default_value = 0,
+			.flags = 0,
+		},
+		.tweak = imx_t_focus_rel,
+	},
+	{
+		.qc = {
+			.id = V4L2_CID_FOCUS_STATUS,
+			.type = V4L2_CTRL_TYPE_INTEGER,
+			.name = "focus status",
+			.minimum = 0,
+			.maximum = 100, /* allow enum to grow in the future */
+			.step = 1,
+			.default_value = 0,
+			.flags = 0,
+		},
+		.query = imx_q_focus_status,
+	},
+	{
+		.qc = {
+			.id = V4L2_CID_VCM_SLEW,
+			.type = V4L2_CTRL_TYPE_INTEGER,
+			.name = "vcm slew",
+			.minimum = 0,
+			.maximum = IMX_VCM_SLEW_STEP_MAX,
+			.step = 1,
+			.default_value = 0,
+			.flags = 0,
+		},
+		.tweak = imx_t_vcm_slew,
+	},
+	{
+		.qc = {
+			.id = V4L2_CID_VCM_TIMEING,
+			.type = V4L2_CTRL_TYPE_INTEGER,
+			.name = "vcm step time",
+			.minimum = 0,
+			.maximum = IMX_VCM_SLEW_TIME_MAX,
+			.step = 1,
+			.default_value = 0,
+			.flags = 0,
+		},
+		.tweak = imx_t_vcm_timing,
+	},
+	{
+		.qc = {
+			.id = V4L2_CID_FOCAL_ABSOLUTE,
+			.type = V4L2_CTRL_TYPE_INTEGER,
+			.name = "focal length",
+			.minimum = IMX_FOCAL_LENGTH_DEFAULT,
+			.maximum = IMX_FOCAL_LENGTH_DEFAULT,
+			.step = 0x01,
+			.default_value = IMX_FOCAL_LENGTH_DEFAULT,
+			.flags = 0,
+		},
+		.query = imx_g_focal,
+	},
+	{
+		.qc = {
+			.id = V4L2_CID_FNUMBER_ABSOLUTE,
+			.type = V4L2_CTRL_TYPE_INTEGER,
+			.name = "f-number",
+			.minimum = IMX_F_NUMBER_DEFAULT,
+			.maximum = IMX_F_NUMBER_DEFAULT,
+			.step = 0x01,
+			.default_value = IMX_F_NUMBER_DEFAULT,
+			.flags = 0,
+		},
+		.query = imx_g_fnumber,
+	},
+	{
+		.qc = {
+			.id = V4L2_CID_FNUMBER_RANGE,
+			.type = V4L2_CTRL_TYPE_INTEGER,
+			.name = "f-number range",
+			.minimum = IMX_F_NUMBER_RANGE,
+			.maximum =  IMX_F_NUMBER_RANGE,
+			.step = 0x01,
+			.default_value = IMX_F_NUMBER_RANGE,
+			.flags = 0,
+		},
+		.query = imx_g_fnumber_range,
+	},
+	{
+		.qc = {
+			.id = V4L2_CID_BIN_FACTOR_HORZ,
+			.type = V4L2_CTRL_TYPE_INTEGER,
+			.name = "horizontal binning factor",
+			.minimum = 0,
+			.maximum = IMX_BIN_FACTOR_MAX,
+			.step = 1,
+			.default_value = 0,
+			.flags = 0,
+		},
+		.query = imx_g_bin_factor_x,
+	},
+	{
+		.qc = {
+			.id = V4L2_CID_BIN_FACTOR_VERT,
+			.type = V4L2_CTRL_TYPE_INTEGER,
+			.name = "vertical binning factor",
+			.minimum = 0,
+			.maximum = IMX_BIN_FACTOR_MAX,
+			.step = 1,
+			.default_value = 0,
+			.flags = 0,
+		},
+		.query = imx_g_bin_factor_y,
+	},
+};
+#define N_CONTROLS (ARRAY_SIZE(imx_controls))
+
+static struct imx_control *imx_find_control(u32 id)
 {
-	struct imx_device *dev = container_of(
-		ctrl->handler, struct imx_device, ctrl_handler);
-	struct i2c_client *client = v4l2_get_subdevdata(&dev->sd);
-	int ret = 0;
+	int i;
 
-	switch (ctrl->id) {
-	case V4L2_CID_TEST_PATTERN:
-		ret = imx_test_pattern(&dev->sd);
-		break;
-	case V4L2_CID_VFLIP:
-		dev_dbg(&client->dev, "%s: CID_VFLIP:%d.\n", __func__, ctrl->val);
-		ret = imx_v_flip(&dev->sd, ctrl->val);
-		break;
-	case V4L2_CID_HFLIP:
-		dev_dbg(&client->dev, "%s: CID_HFLIP:%d.\n", __func__, ctrl->val);
-		ret = imx_h_flip(&dev->sd, ctrl->val);
-		break;
-	case V4L2_CID_FOCUS_ABSOLUTE:
-		ret = imx_t_focus_abs(&dev->sd, ctrl->val);
-		break;
-	case V4L2_CID_FOCUS_RELATIVE:
-		ret = imx_t_focus_rel(&dev->sd, ctrl->val);
-		break;
-	case V4L2_CID_VCM_SLEW:
-		ret = imx_t_vcm_slew(&dev->sd, ctrl->val);
-		break;
-	case V4L2_CID_VCM_TIMEING:
-		ret = imx_t_vcm_timing(&dev->sd, ctrl->val);
-		break;
-	}
-
-	return ret;
+	for (i = 0; i < N_CONTROLS; i++)
+		if (imx_controls[i].qc.id == id)
+			return &imx_controls[i];
+	return NULL;
 }
 
-static int imx_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
+static int imx_queryctrl(struct v4l2_subdev *sd, struct v4l2_queryctrl *qc)
 {
-	struct imx_device *dev = container_of(
-		ctrl->handler, struct imx_device, ctrl_handler);
-	int ret = 0;
-	unsigned int val;
+	struct imx_control *ctrl = imx_find_control(qc->id);
+	struct imx_device *dev = to_imx_sensor(sd);
 
-	switch (ctrl->id) {
-	case V4L2_CID_EXPOSURE_ABSOLUTE:
-		ret = imx_q_exposure(&dev->sd, &ctrl->val);
-		break;
-	case V4L2_CID_FOCUS_ABSOLUTE:
-		ret = imx_q_focus_abs(&dev->sd, &ctrl->val);
-		break;
-	case V4L2_CID_FOCUS_STATUS:
-		ret = imx_q_focus_status(&dev->sd, &ctrl->val);
-		break;
-	case V4L2_CID_FOCAL_ABSOLUTE:
-		ret = imx_g_focal(&dev->sd, &ctrl->val);
-		break;
-	case V4L2_CID_FNUMBER_ABSOLUTE:
-		ret = imx_g_fnumber(&dev->sd, &ctrl->val);
-		break;
-	case V4L2_CID_FNUMBER_RANGE:
-		ret = imx_g_fnumber_range(&dev->sd, &ctrl->val);
-		break;
-	case V4L2_CID_BIN_FACTOR_HORZ:
-		ret = imx_g_bin_factor_x(&dev->sd, &ctrl->val);
-		break;
-	case V4L2_CID_BIN_FACTOR_VERT:
-		ret = imx_g_bin_factor_y(&dev->sd, &ctrl->val);
-		break;
-	case V4L2_CID_VBLANK:
-		ctrl->val = dev->lines_per_frame -
-			dev->curr_res_table[dev->fmt_idx].height;
-		break;
-	case V4L2_CID_HBLANK:
-		ctrl->val = dev->pixels_per_line -
-			dev->curr_res_table[dev->fmt_idx].width;
-		break;
-	case V4L2_CID_PIXEL_RATE:
-		ctrl->val = dev->vt_pix_clk_freq_mhz;
-		break;
-	case V4L2_CID_LINK_FREQ:
-		val = dev->curr_res_table[dev->fmt_idx].
-					fps_options[dev->fps_index].mipi_freq;
-		if (val == 0)
-			val = dev->curr_res_table[dev->fmt_idx].mipi_freq;
-		if (val == 0)
-			return -EINVAL;
-		ctrl->val = val * 1000;			/* To Hz */
-		break;
-	default:
+	if (ctrl == NULL)
 		return -EINVAL;
-	}
+
+	mutex_lock(&dev->input_lock);
+	*qc = ctrl->qc;
+	mutex_unlock(&dev->input_lock);
+
+	return 0;
+}
+
+/* imx control set/get */
+static int imx_g_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
+{
+	struct imx_control *s_ctrl;
+	struct imx_device *dev = to_imx_sensor(sd);
+	int ret;
+
+	if (!ctrl)
+		return -EINVAL;
+
+	s_ctrl = imx_find_control(ctrl->id);
+	if ((s_ctrl == NULL) || (s_ctrl->query == NULL))
+		return -EINVAL;
+
+	mutex_lock(&dev->input_lock);
+	ret = s_ctrl->query(sd, &ctrl->value);
+	mutex_unlock(&dev->input_lock);
 
 	return ret;
 }
 
-static const struct v4l2_ctrl_ops ctrl_ops = {
-	.s_ctrl = imx_s_ctrl,
-	.g_volatile_ctrl = imx_g_volatile_ctrl
-};
+static int imx_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
+{
+	struct imx_control *octrl = imx_find_control(ctrl->id);
+	struct imx_device *dev = to_imx_sensor(sd);
+	int ret;
 
-static const struct v4l2_ctrl_config imx_controls[] = {
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_EXPOSURE_ABSOLUTE,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "exposure",
-		.min = 0x0,
-		.max = 0xffff,
-		.step = 0x01,
-		.def = 0x00,
-		.flags = V4L2_CTRL_FLAG_VOLATILE,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_TEST_PATTERN,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "Test pattern",
-		.min = 0,
-		.max = 0xffff,
-		.step = 1,
-		.def = 0,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_TEST_PATTERN_COLOR_R,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "Test pattern solid color R",
-		.min = INT_MIN,
-		.max = INT_MAX,
-		.step = 1,
-		.def = 0,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_TEST_PATTERN_COLOR_GR,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "Test pattern solid color GR",
-		.min = INT_MIN,
-		.max = INT_MAX,
-		.step = 1,
-		.def = 0,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_TEST_PATTERN_COLOR_GB,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "Test pattern solid color GB",
-		.min = INT_MIN,
-		.max = INT_MAX,
-		.step = 1,
-		.def = 0,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_TEST_PATTERN_COLOR_B,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "Test pattern solid color B",
-		.min = INT_MIN,
-		.max = INT_MAX,
-		.step = 1,
-		.def = 0,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_VFLIP,
-		.type = V4L2_CTRL_TYPE_BOOLEAN,
-		.name = "Flip",
-		.min = 0,
-		.max = 1,
-		.step = 1,
-		.def = 0,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_HFLIP,
-		.type = V4L2_CTRL_TYPE_BOOLEAN,
-		.name = "Mirror",
-		.min = 0,
-		.max = 1,
-		.step = 1,
-		.def = 0,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_FOCUS_ABSOLUTE,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "focus move absolute",
-		.min = 0,
-		.max = IMX_MAX_FOCUS_POS,
-		.step = 1,
-		.def = 0,
-		.flags = V4L2_CTRL_FLAG_VOLATILE,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_FOCUS_RELATIVE,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "focus move relative",
-		.min = IMX_MAX_FOCUS_NEG,
-		.max = IMX_MAX_FOCUS_POS,
-		.step = 1,
-		.def = 0,
-		.flags = 0,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_FOCUS_STATUS,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "focus status",
-		.min = 0,
-		.max = 100, /* allow enum to grow in the future */
-		.step = 1,
-		.def = 0,
-		.flags = V4L2_CTRL_FLAG_VOLATILE,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_VCM_SLEW,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "vcm slew",
-		.min = 0,
-		.max = IMX_VCM_SLEW_STEP_MAX,
-		.step = 1,
-		.def = 0,
-		.flags = 0,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_VCM_TIMEING,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "vcm step time",
-		.min = 0,
-		.max = IMX_VCM_SLEW_TIME_MAX,
-		.step = 1,
-		.def = 0,
-		.flags = 0,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_FOCAL_ABSOLUTE,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "focal length",
-		.min = IMX_FOCAL_LENGTH_DEFAULT,
-		.max = IMX_FOCAL_LENGTH_DEFAULT,
-		.step = 0x01,
-		.def = IMX_FOCAL_LENGTH_DEFAULT,
-		.flags = V4L2_CTRL_FLAG_VOLATILE,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_FNUMBER_ABSOLUTE,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "f-number",
-		.min = IMX_F_NUMBER_DEFAULT,
-		.max = IMX_F_NUMBER_DEFAULT,
-		.step = 0x01,
-		.def = IMX_F_NUMBER_DEFAULT,
-		.flags = V4L2_CTRL_FLAG_VOLATILE,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_FNUMBER_RANGE,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "f-number range",
-		.min = IMX_F_NUMBER_RANGE,
-		.max =  IMX_F_NUMBER_RANGE,
-		.step = 0x01,
-		.def = IMX_F_NUMBER_RANGE,
-		.flags = V4L2_CTRL_FLAG_VOLATILE,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_BIN_FACTOR_HORZ,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "horizontal binning factor",
-		.min = 0,
-		.max = IMX_BIN_FACTOR_MAX,
-		.step = 1,
-		.def = 0,
-		.flags = V4L2_CTRL_FLAG_VOLATILE,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_BIN_FACTOR_VERT,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "vertical binning factor",
-		.min = 0,
-		.max = IMX_BIN_FACTOR_MAX,
-		.step = 1,
-		.def = 0,
-		.flags = V4L2_CTRL_FLAG_VOLATILE,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_LINK_FREQ,
-		.name = "Link Frequency",
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.min = 1,
-		.max = 1500000 * 1000,
-		.step = 1,
-		.def = 1,
-		.flags = V4L2_CTRL_FLAG_VOLATILE | V4L2_CTRL_FLAG_READ_ONLY,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_PIXEL_RATE,
-		.name = "Pixel Rate",
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.min = 0,
-		.max = INT_MAX,
-		.step = 1,
-		.def = 0,
-		.flags = V4L2_CTRL_FLAG_VOLATILE,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_HBLANK,
-		.name = "Horizontal Blanking",
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.min = 0,
-		.max = SHRT_MAX,
-		.step = 1,
-		.def = 0,
-		.flags = V4L2_CTRL_FLAG_VOLATILE,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_VBLANK,
-		.name = "Vertical Blanking",
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.min = 0,
-		.max = SHRT_MAX,
-		.step = 1,
-		.def = 0,
-		.flags = V4L2_CTRL_FLAG_VOLATILE,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_HFLIP,
-		.name = "Horizontal Flip",
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.min = 0,
-		.max = 1,
-		.step = 1,
-		.def = 0,
-		.flags = 0,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_VFLIP,
-		.name = "Vertical Flip",
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.min = 0,
-		.max = 1,
-		.step = 1,
-		.def = 0,
-		.flags = 0,
-	},
-};
+	if ((octrl == NULL) || (octrl->tweak == NULL))
+		return -EINVAL;
+
+	mutex_lock(&dev->input_lock);
+	ret = octrl->tweak(sd, ctrl->value);
+	mutex_unlock(&dev->input_lock);
+
+	return ret;
+}
 
 /*
  * distance - calculate the distance
@@ -1501,16 +1245,13 @@ static const struct v4l2_ctrl_config imx_controls[] = {
 #define LARGEST_ALLOWED_RATIO_MISMATCH 600
 static int distance(struct imx_resolution const *res, u32 w, u32 h)
 {
-	unsigned int w_ratio;
+	unsigned int w_ratio = ((res->width << 13)/w);
 	unsigned int h_ratio;
 	int match;
 
-	if (w == 0)
-		return -1;
-	w_ratio = (res->width << 13) / w;
 	if (h == 0)
 		return -1;
-	h_ratio = (res->height << 13) / h;
+	h_ratio = ((res->height << 13) / h);
 	if (h_ratio == 0)
 		return -1;
 	match   = abs(((w_ratio << 13) / h_ratio) - ((int)8192));
@@ -1544,7 +1285,7 @@ static int nearest_resolution_index(struct v4l2_subdev *sd, int w, int h)
 			idx = i;
 		}
 		if (dist == min_dist) {
-			fps_diff = __imx_min_fps_diff(dev->targetfps,
+			fps_diff = __imx_min_fps_diff(dev->fps,
 						tmp_res->fps_options);
 			if (fps_diff < min_fps_diff) {
 				min_fps_diff = fps_diff;
@@ -1611,12 +1352,12 @@ static int __adjust_hvblank(struct v4l2_subdev *sd)
 	new_line_length_pck = dev->curr_res_table[dev->fmt_idx].width +
 		dev->h_blank->val;
 
-	ret = imx_write_reg(client, IMX_16BIT,
-		dev->reg_addr->line_length_pixels, new_line_length_pck);
+	ret = imx_write_reg(client, IMX_16BIT, IMX_LINE_LENGTH_PIXELS,
+			    new_line_length_pck);
 	if (ret)
 		return ret;
-	ret = imx_write_reg(client, IMX_16BIT,
-		dev->reg_addr->frame_length_lines, new_frame_length_lines);
+	ret = imx_write_reg(client, IMX_16BIT, IMX_FRAME_LENGTH_LINES,
+			    new_frame_length_lines);
 	if (ret)
 		return ret;
 
@@ -1633,9 +1374,8 @@ static int imx_s_mbus_fmt(struct v4l2_subdev *sd,
 	struct camera_mipi_info *imx_info = NULL;
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	const struct imx_resolution *res;
-	int lanes = imx_get_lanes(sd);
 	int ret;
-	u16 data, val;
+	u16 val;
 
 	imx_info = v4l2_get_subdev_hostdata(sd);
 	if (imx_info == NULL)
@@ -1647,14 +1387,12 @@ static int imx_s_mbus_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&dev->input_lock);
 
 	dev->fmt_idx = nearest_resolution_index(sd, fmt->width, fmt->height);
-	if (dev->fmt_idx == -1) {
-		ret = -EINVAL;
-		goto out;
-	}
+	if (dev->fmt_idx == -1)
+		return -EINVAL;
 	res = &dev->curr_res_table[dev->fmt_idx];
 
 	/* Adjust the FPS selection based on the resolution selected */
-	dev->fps_index = __imx_nearest_fps_index(dev->targetfps, res->fps_options);
+	dev->fps_index = __imx_nearest_fps_index(dev->fps, res->fps_options);
 	dev->fps = res->fps_options[dev->fps_index].fps;
 	dev->regs = res->fps_options[dev->fps_index].regs;
 	if (!dev->regs)
@@ -1664,39 +1402,20 @@ static int imx_s_mbus_fmt(struct v4l2_subdev *sd,
 	if (ret)
 		goto out;
 
-	if (dev->sensor_id == IMX132_ID && lanes > 0) {
-		static const u8 imx132_rgpltd[] = {
-			2,		/* 1 lane:  /1 */
-			0,		/* 2 lanes: /2 */
-			0,		/* undefined   */
-			1,		/* 4 lanes: /4 */
-		};
-		ret = imx_write_reg(client, IMX_8BIT, IMX132_208_VT_RGPLTD,
-				    imx132_rgpltd[lanes - 1]);
-		if (ret)
-			goto out;
-	}
-
 	dev->pixels_per_line = res->fps_options[dev->fps_index].pixels_per_line;
 	dev->lines_per_frame = res->fps_options[dev->fps_index].lines_per_frame;
 
 	/* dbg h/v blank time */
+	mutex_lock(dev->ctrl_handler.lock);
 	__adjust_hvblank(sd);
+	mutex_unlock(dev->ctrl_handler.lock);
 
 	ret = __imx_update_exposure_timing(client, dev->coarse_itg,
 		dev->pixels_per_line, dev->lines_per_frame);
 	if (ret)
 		goto out;
 
-	ret = __imx_update_gain(sd, dev->gain);
-	if (ret)
-		goto out;
-
-	ret = __imx_update_digital_gain(client, dev->digital_gain);
-	if (ret)
-		goto out;
-
-	ret = imx_write_reg_array(client, dev->param_update);
+	ret = imx_write_reg_array(client, imx_param_update);
 	if (ret)
 		goto out;
 
@@ -1704,54 +1423,13 @@ static int imx_s_mbus_fmt(struct v4l2_subdev *sd,
 	if (ret)
 		goto out;
 
-	ret = imx_read_reg(client, IMX_8BIT,
-		dev->reg_addr->img_orientation, &val);
+	ret = imx_read_reg(client, IMX_8BIT, IMX_IMG_ORIENTATION, &val);
 	if (ret)
 		goto out;
 	val &= (IMX_VFLIP_BIT|IMX_HFLIP_BIT);
 	imx_info->raw_bayer_order = imx_bayer_order_mapping[val];
 	dev->format.code = imx_translate_bayer_order(
 		imx_info->raw_bayer_order);
-
-	/*
-	 * Fill meta data info. add imx135 metadata setting for RAW10 format
-	 */
-	switch (dev->sensor_id) {
-	case IMX135_ID:
-		ret = imx_read_reg(client, 2, IMX135_OUTPUT_DATA_FORMAT_REG, &data);
-		if (ret)
-			goto out;
-		/*
-		 * The IMX135 can support various resolutions like
-		 * RAW6/8/10/12/14.
-		 * 1.The data format is RAW10:
-		 *   matadata width = current resolution width(pixel) * 10 / 8
-		 * 2.The data format is RAW6 or RAW8:
-		 *   matadata width = current resolution width(pixel);
-		 * 3.other data format(RAW12/14 etc):
-		 *   TBD.
-		 */
-		if (data == IMX135_OUTPUT_FORMAT_RAW10)
-			/* the data format is RAW10. */
-			imx_info->metadata_width = res->width * 10 / 8;
-		else
-			/* The data format is RAW6/8/12/14/ etc. */
-			imx_info->metadata_width = res->width;
-
-		imx_info->metadata_height = IMX135_EMBEDDED_DATA_LINE_NUM;
-
-		if (imx_info->metadata_effective_width == NULL)
-			imx_info->metadata_effective_width =
-				imx135_embedded_effective_size;
-
-		break;
-	default:
-		imx_info->metadata_width = 0;
-		imx_info->metadata_height = 0;
-		imx_info->metadata_effective_width = NULL;
-		break;
-	}
-
 out:
 	mutex_unlock(&dev->input_lock);
 	return ret;
@@ -1783,12 +1461,11 @@ static int imx_detect(struct i2c_client *client, u16 *id, u8 *revision)
 		return -ENODEV;
 
 	/* check sensor chip ID	 */
-	if (imx_read_reg(client, IMX_16BIT, IMX132_175_208_219_CHIP_ID, id)) {
+	if (imx_read_reg(client, IMX_16BIT, IMX132_175_CHIP_ID, id)) {
 		v4l2_err(client, "sensor_id = 0x%x\n", *id);
 		return -ENODEV;
 	}
-
-	if (*id == IMX132_ID || *id == IMX175_ID || *id == IMX208_ID || *id == IMX219_ID)
+	if (*id == IMX132_ID || *id == IMX175_ID)
 		goto found;
 
 	if (imx_read_reg(client, IMX_16BIT, IMX134_135_CHIP_ID, id)) {
@@ -1852,12 +1529,6 @@ static int imx_s_stream(struct v4l2_subdev *sd, int enable)
 				return ret;
 			}
 		}
-		ret = imx_test_pattern(sd);
-		if (ret) {
-			v4l2_err(client, "Configure test pattern failed.\n");
-			mutex_unlock(&dev->input_lock);
-			return ret;
-		}
 		__imx_print_timing(sd);
 		ret = imx_write_reg_array(client, imx_streaming);
 		if (ret != 0) {
@@ -1874,7 +1545,8 @@ static int imx_s_stream(struct v4l2_subdev *sd, int enable)
 			return ret;
 		}
 		dev->streaming = 0;
-		dev->targetfps = 0;
+		dev->fps_index = 0;
+		dev->fps = 0;
 	}
 	mutex_unlock(&dev->input_lock);
 
@@ -1953,12 +1625,10 @@ static int imx_enum_mbus_fmt(struct v4l2_subdev *sd, unsigned int index,
 
 static int __update_imx_device_settings(struct imx_device *dev, u16 sensor_id)
 {
-#ifndef CONFIG_GMIN_INTEL_MID /* FIXME! for non-gmin*/
 	switch (sensor_id) {
 	case IMX175_ID:
-		if (INTEL_MID_BOARD(1, TABLET, CHT) ||
-		    INTEL_MID_BOARD(1, PHONE, BYT) ||
-		    INTEL_MID_BOARD(1, TABLET, BYT)) {
+		if (INTEL_MID_BOARD(1, PHONE, BYT) ||
+			INTEL_MID_BOARD(1, TABLET, BYT)) {
 			dev->mode_tables = &imx_sets[IMX175_VALLEYVIEW];
 			dev->vcm_driver = &imx_vcms[IMX175_VALLEYVIEW];
 			dev->otp_driver = &imx_otps[IMX175_VALLEYVIEW];
@@ -1985,19 +1655,9 @@ static int __update_imx_device_settings(struct imx_device *dev, u16 sensor_id)
 		dev->vcm_driver = &imx_vcms[IMX134_VALLEYVIEW];
 		dev->otp_driver = &imx_otps[IMX134_VALLEYVIEW];
 		break;
-	case IMX219_ID:
-		dev->mode_tables = &imx_sets[IMX219_MFV0_PRH];
-		dev->vcm_driver = &imx_vcms[IMX219_MFV0_PRH];
-		dev->otp_driver = &imx_otps[IMX219_MFV0_PRH];
-		break;
 	case IMX132_ID:
 		dev->mode_tables = &imx_sets[IMX132_SALTBAY];
 		dev->otp_driver = &imx_otps[IMX132_SALTBAY];
-		dev->vcm_driver = NULL;
-		return 0;
-	case IMX208_ID:
-		dev->mode_tables = &imx_sets[IMX208_MOFD_PD2];
-		dev->otp_driver = &imx_otps[IMX208_MOFD_PD2];
 		dev->vcm_driver = NULL;
 		return 0;
 	default:
@@ -2005,10 +1665,6 @@ static int __update_imx_device_settings(struct imx_device *dev, u16 sensor_id)
 	}
 
 	return dev->vcm_driver->init(&dev->sd);
-#else
-	/* IMX on other platform is not supported yet */
-	return -EINVAL;
-#endif
 }
 
 static int imx_s_config(struct v4l2_subdev *sd,
@@ -2033,17 +1689,6 @@ static int imx_s_config(struct v4l2_subdev *sd,
 			dev_err(&client->dev, "imx platform init err\n");
 			return ret;
 		}
-	}
-	/*
-	 * power off the module first.
-	 *
-	 * As first power on by board have undecided state of power/gpio pins.
-	 */
-	ret = __imx_s_power(sd, 0);
-	if (ret) {
-		v4l2_err(client, "imx power-down err.\n");
-		mutex_unlock(&dev->input_lock);
-		return ret;
 	}
 
 	ret = __imx_s_power(sd, 1);
@@ -2175,10 +1820,9 @@ static int
 imx_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *param)
 {
 	struct imx_device *dev = to_imx_sensor(sd);
-
-	mutex_lock(&dev->input_lock);
 	dev->run_mode = param->parm.capture.capturemode;
 
+	mutex_lock(&dev->input_lock);
 	switch (dev->run_mode) {
 	case CI_MODE_VIDEO:
 		dev->curr_res_table = dev->mode_tables->res_video;
@@ -2201,9 +1845,11 @@ imx_g_frame_interval(struct v4l2_subdev *sd,
 				struct v4l2_subdev_frame_interval *interval)
 {
 	struct imx_device *dev = to_imx_sensor(sd);
+	const struct imx_resolution *res =
+				&dev->curr_res_table[dev->fmt_idx];
 
 	mutex_lock(&dev->input_lock);
-	interval->interval.denominator = dev->fps;
+	interval->interval.denominator = res->fps_options[dev->fps_index].fps;
 	interval->interval.numerator = 1;
 	mutex_unlock(&dev->input_lock);
 	return 0;
@@ -2217,11 +1863,9 @@ static int __imx_s_frame_interval(struct v4l2_subdev *sd,
 	const struct imx_resolution *res =
 				&dev->curr_res_table[dev->fmt_idx];
 	struct camera_mipi_info *imx_info = NULL;
-	unsigned short pixels_per_line;
-	unsigned short lines_per_frame;
 	unsigned int fps_index;
-	int fps;
 	int ret = 0;
+	int fps;
 
 
 	imx_info = v4l2_get_subdev_hostdata(sd);
@@ -2233,98 +1877,39 @@ static int __imx_s_frame_interval(struct v4l2_subdev *sd,
 
 	fps = interval->interval.denominator / interval->interval.numerator;
 
-	if (!fps)
-		return -EINVAL;
-
-	dev->targetfps = fps;
 	/* No need to proceed further if we are not streaming */
-	if (!dev->streaming)
+	if (!dev->streaming) {
+		/* Save the new FPS and use it while selecting setting */
+		dev->fps = fps;
 		return 0;
+	}
 
 	 /* Ignore if we are already using the required FPS. */
-	if (fps == dev->fps)
+	if (fps == res->fps_options[dev->fps_index].fps)
 		return 0;
 
-	/*
-	 * Start here, sensor is already streaming, so adjust fps dynamically
-	 */
-	fps_index = __imx_above_nearest_fps_index(fps, res->fps_options);
-	if (fps > res->fps_options[fps_index].fps) {
-		/*
-		 * if does not have high fps setting, not support increase fps
-		 * by adjust lines per frame.
-		 */
-		dev_err(&client->dev, "Could not support fps: %d.\n", fps);
-		return -EINVAL;
-	}
+	fps_index = __imx_nearest_fps_index(fps, res->fps_options);
 
 	if (res->fps_options[fps_index].regs &&
 	    res->fps_options[fps_index].regs != dev->regs) {
-		/*
-		 * if need a new setting, but the new setting has difference
-		 * with current setting, not use this one, as may have
-		 * unexpected result, e.g. PLL, IQ.
-		 */
-		dev_dbg(&client->dev, "Sensor is streaming, not apply new sensor setting\n");
-		if (fps > res->fps_options[dev->fps_index].fps) {
-			/*
-			 * Does not support increase fps based on low fps
-			 * setting, as the high fps setting could not be used,
-			 * and fps requested is above current setting fps.
-			 */
-			dev_warn(&client->dev, "Could not support fps: %d, keep current: %d.\n",
-					fps, dev->fps);
-			return 0;
-		}
-	} else {
-		dev->fps_index = fps_index;
-		dev->fps = res->fps_options[dev->fps_index].fps;
+		dev_err(&client->dev, "Sensor is streaming, cannot apply new configuration\n");
+		return -EBUSY;
 	}
+
+	dev->fps_index = fps_index;
+	dev->fps = res->fps_options[dev->fps_index].fps;
 
 	/* Update the new frametimings based on FPS */
-	pixels_per_line = res->fps_options[dev->fps_index].pixels_per_line;
-	lines_per_frame = res->fps_options[dev->fps_index].lines_per_frame;
-
-	if (fps > res->fps_options[fps_index].fps) {
-		/*
-		 * if does not have high fps setting, not support increase fps
-		 * by adjust lines per frame.
-		 */
-		dev_warn(&client->dev, "Could not support fps: %d. Use:%d.\n",
-				fps, res->fps_options[fps_index].fps);
-		goto done;
-	}
-
-	/* if the new setting does not match exactly */
-	if (dev->fps != fps) {
-#define MAX_LINES_PER_FRAME	0xffff
-		dev_dbg(&client->dev, "adjusting fps using lines_per_frame\n");
-		/*
-		 * FIXME!
-		 * 1: check DS on max value of lines_per_frame
-		 * 2: consider use pixel per line for more range?
-		 */
-		if (dev->lines_per_frame * dev->fps / fps >
-				MAX_LINES_PER_FRAME) {
-			dev_warn(&client->dev,
-					"adjust lines_per_frame out of range, try to use max value.\n");
-			lines_per_frame = MAX_LINES_PER_FRAME;
-		} else {
-			lines_per_frame = lines_per_frame * dev->fps / fps;
-		}
-	}
-done:
-	/* Update the new frametimings based on FPS */
-	dev->pixels_per_line = pixels_per_line;
-	dev->lines_per_frame = lines_per_frame;
+	dev->pixels_per_line =
+		res->fps_options[dev->fps_index].pixels_per_line;
+	dev->lines_per_frame =
+		res->fps_options[dev->fps_index].lines_per_frame;
 
 	/* Update the new values so that user side knows the current settings */
 	ret = __imx_update_exposure_timing(client,
 		dev->coarse_itg, dev->pixels_per_line, dev->lines_per_frame);
 	if (ret)
 		return ret;
-
-	dev->fps = fps;
 
 	ret = imx_get_intg_factor(client, imx_info, dev->regs);
 	if (ret)
@@ -2364,6 +1949,39 @@ static const struct v4l2_subdev_sensor_ops imx_sensor_ops = {
 	.g_skip_frames	= imx_g_skip_frames,
 };
 
+static int imx_set_ctrl(struct v4l2_ctrl *ctrl)
+{
+	return 0;
+}
+
+static int imx_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct imx_device *dev = container_of(ctrl->handler, struct imx_device,
+			ctrl_handler);
+
+	switch (ctrl->id) {
+	case V4L2_CID_VBLANK:
+		ctrl->val = dev->lines_per_frame -
+			dev->curr_res_table[dev->fmt_idx].height;
+		break;
+	case V4L2_CID_HBLANK:
+		ctrl->val = dev->pixels_per_line -
+			dev->curr_res_table[dev->fmt_idx].width;
+		break;
+	case V4L2_CID_PIXEL_RATE:
+		ctrl->val = dev->vt_pix_clk_freq_mhz;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static struct v4l2_ctrl_ops imx_ctrl_ops = {
+	.s_ctrl = imx_set_ctrl,
+	.g_volatile_ctrl = imx_g_volatile_ctrl,
+};
+
 static const struct v4l2_subdev_video_ops imx_video_ops = {
 	.s_stream = imx_s_stream,
 	.enum_framesizes = imx_enum_framesizes,
@@ -2378,12 +1996,10 @@ static const struct v4l2_subdev_video_ops imx_video_ops = {
 };
 
 static const struct v4l2_subdev_core_ops imx_core_ops = {
-#ifndef CONFIG_GMIN_INTEL_MID /* FIXME! for non-gmin*/
 	.g_chip_ident = imx_g_chip_ident,
-#endif
-	.queryctrl = v4l2_subdev_queryctrl,
-	.g_ctrl = v4l2_subdev_g_ctrl,
-	.s_ctrl = v4l2_subdev_s_ctrl,
+	.queryctrl = imx_queryctrl,
+	.g_ctrl = imx_g_ctrl,
+	.s_ctrl = imx_s_ctrl,
 	.s_power = imx_s_power,
 	.ioctl = imx_ioctl,
 	.init = imx_init,
@@ -2428,64 +2044,36 @@ static int imx_remove(struct i2c_client *client)
 static int __imx_init_ctrl_handler(struct imx_device *dev)
 {
 	struct v4l2_ctrl_handler *hdl;
-	int i;
 
 	hdl = &dev->ctrl_handler;
 
-	v4l2_ctrl_handler_init(&dev->ctrl_handler, ARRAY_SIZE(imx_controls));
+	v4l2_ctrl_handler_init(&dev->ctrl_handler, 3);
 
-	for (i = 0; i < ARRAY_SIZE(imx_controls); i++)
-		v4l2_ctrl_new_custom(&dev->ctrl_handler,
-				&imx_controls[i], NULL);
+	dev->pixel_rate = v4l2_ctrl_new_std(&dev->ctrl_handler,
+					    &imx_ctrl_ops,
+					    V4L2_CID_PIXEL_RATE,
+					    0, UINT_MAX, 1, 0);
 
-	dev->pixel_rate = v4l2_ctrl_find(&dev->ctrl_handler,
-				V4L2_CID_PIXEL_RATE);
-	dev->h_blank = v4l2_ctrl_find(&dev->ctrl_handler,
-				V4L2_CID_HBLANK);
-	dev->v_blank = v4l2_ctrl_find(&dev->ctrl_handler,
-				V4L2_CID_VBLANK);
-	dev->link_freq = v4l2_ctrl_find(&dev->ctrl_handler,
-				V4L2_CID_LINK_FREQ);
-	dev->h_flip = v4l2_ctrl_find(&dev->ctrl_handler,
-				V4L2_CID_HFLIP);
-	dev->v_flip = v4l2_ctrl_find(&dev->ctrl_handler,
-				V4L2_CID_VFLIP);
-	dev->tp_mode = v4l2_ctrl_find(&dev->ctrl_handler,
-				V4L2_CID_TEST_PATTERN);
-	dev->tp_r = v4l2_ctrl_find(&dev->ctrl_handler,
-				V4L2_CID_TEST_PATTERN_COLOR_R);
-	dev->tp_gr = v4l2_ctrl_find(&dev->ctrl_handler,
-				V4L2_CID_TEST_PATTERN_COLOR_GR);
-	dev->tp_gb = v4l2_ctrl_find(&dev->ctrl_handler,
-				V4L2_CID_TEST_PATTERN_COLOR_GB);
-	dev->tp_b = v4l2_ctrl_find(&dev->ctrl_handler,
-				V4L2_CID_TEST_PATTERN_COLOR_B);
+	dev->h_blank = v4l2_ctrl_new_std(&dev->ctrl_handler,
+					  &imx_ctrl_ops,
+					  V4L2_CID_HBLANK, 0, SHRT_MAX, 1, 0);
+
+	dev->v_blank = v4l2_ctrl_new_std(&dev->ctrl_handler,
+					  &imx_ctrl_ops,
+					  V4L2_CID_VBLANK, 0, SHRT_MAX, 1, 0);
 
 	if (dev->ctrl_handler.error || dev->pixel_rate == NULL
-		|| dev->h_blank == NULL || dev->v_blank == NULL
-		|| dev->h_flip == NULL || dev->v_flip == NULL
-		|| dev->link_freq == NULL) {
+		|| dev->h_blank == NULL || dev->v_blank == NULL) {
 		return dev->ctrl_handler.error;
 	}
 
-	dev->ctrl_handler.lock = &dev->input_lock;
 	dev->sd.ctrl_handler = hdl;
-	v4l2_ctrl_handler_setup(&dev->ctrl_handler);
+
+	dev->pixel_rate->flags |= V4L2_CTRL_FLAG_VOLATILE;
+	dev->h_blank->flags |= V4L2_CTRL_FLAG_VOLATILE;
+	dev->v_blank->flags |= V4L2_CTRL_FLAG_VOLATILE;
 
 	return 0;
-}
-
-static void imx_update_reg_info(struct imx_device *dev)
-{
-	if (dev->sensor_id == IMX219_ID) {
-		dev->reg_addr = &imx219_addr;
-		dev->param_hold = imx219_param_hold;
-		dev->param_update = imx219_param_update;
-	} else {
-		dev->reg_addr = &imx_addr;
-		dev->param_hold = imx_param_hold;
-		dev->param_update = imx_param_update;
-	}
 }
 
 static int imx_probe(struct i2c_client *client,
@@ -2509,7 +2097,6 @@ static int imx_probe(struct i2c_client *client,
 	dev->fmt_idx = 0;
 	dev->sensor_id = IMX_ID_DEFAULT;
 	dev->vcm_driver = &imx_vcms[IMX_ID_DEFAULT];
-	dev->digital_gain = 256;
 
 	v4l2_i2c_subdev_init(&(dev->sd), client, &imx_ops);
 
@@ -2525,7 +2112,6 @@ static int imx_probe(struct i2c_client *client,
 	 * sd->name is updated with sensor driver name by the v4l2.
 	 * change it to sensor name in this case.
 	 */
-	imx_update_reg_info(dev);
 	snprintf(dev->sd.name, sizeof(dev->sd.name), "%s%x %d-%04x",
 		IMX_SUBDEV_PREFIX, dev->sensor_id,
 		i2c_adapter_id(client->adapter), client->addr);
@@ -2577,8 +2163,6 @@ static const struct i2c_device_id imx_ids[] = {
 	{IMX_NAME_135_FUJI, IMX135_FUJI_ID},
 	{IMX_NAME_134, IMX134_ID},
 	{IMX_NAME_132, IMX132_ID},
-	{IMX_NAME_208, IMX208_ID},
-	{IMX_NAME_219, IMX219_ID},
 	{}
 };
 

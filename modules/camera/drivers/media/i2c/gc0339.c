@@ -1,7 +1,7 @@
 /*
  * Support for gc0339 Camera Sensor.
  *
- * Copyright (c) 2012 Intel Corporation. All Rights Reserved.
+ * Copyright (c) 2013 ASUSTeK COMPUTER INC. All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License version
@@ -18,7 +18,6 @@
  * 02110-1301, USA.
  *
  */
-
 
 #include <linux/module.h>
 #include <linux/types.h>
@@ -40,60 +39,14 @@
 
 #include "gc0339.h"
 
-#define  gc0339_VFLIP_BIT  0x02
-#define  gc0339_HFLIP_BIT  0x01
-#define  gc0339_CTRL_FLIP_ADDR   0X14
-
 #define to_gc0339_sensor(sd) container_of(sd, struct gc0339_device, sd)
 
-
-#ifndef POWER_ALWAYS_ON_BEFORE_SUSPEND
-#define POWER_ALWAYS_ON_BEFORE_SUSPEND
-#endif
-
-/*
- * TODO: use debug parameter to actually define when debug messages should
- * be printed.
- */
-static int debug;
-module_param(debug, int, 0644);
-MODULE_PARM_DESC(debug, "Debug level (0-1)");
-
-//static enum v4l2_mbus_pixelcode gc0339_translate_bayer_order(enum atomisp_bayer_order code);
-static int gc0339_t_vflip(struct v4l2_subdev *sd, int value);
-static int gc0339_t_hflip(struct v4l2_subdev *sd, int value);
-static int gc0339_wait_state(struct i2c_client *client, int timeout);
-
-static enum v4l2_mbus_pixelcode gc0339_translate_bayer_order(enum atomisp_bayer_order code)
-{
-        switch (code) {
-        case atomisp_bayer_order_rggb:
-                return V4L2_MBUS_FMT_SRGGB10_1X10;
-        case atomisp_bayer_order_grbg:
-                return V4L2_MBUS_FMT_SGRBG10_1X10;
-        case atomisp_bayer_order_bggr:
-                return V4L2_MBUS_FMT_SBGGR10_1X10;
-        case atomisp_bayer_order_gbrg:
-                return V4L2_MBUS_FMT_SGBRG10_1X10;
-        }
-        return 0;
-}
-
-static enum atomisp_bayer_order gc0339_bayer_order_mapping[] = {
-			atomisp_bayer_order_rggb,
-			atomisp_bayer_order_grbg,
-			atomisp_bayer_order_gbrg,
-			atomisp_bayer_order_bggr,
-
-};
-
-static u8 g_flip = 0x20;
 static int
 gc0339_read_reg(struct i2c_client *client, u16 data_length, u8 reg, u8 *val)
 {
 	int err;
 	struct i2c_msg msg[2];
-	unsigned char data[4] = {0};
+	unsigned char data[2];
 
 	if (!client->adapter) {
 		v4l2_err(client, "%s error, no client->adapter\n", __func__);
@@ -117,7 +70,7 @@ gc0339_read_reg(struct i2c_client *client, u16 data_length, u8 reg, u8 *val)
 	msg[1].addr = client->addr;
 	msg[1].len = data_length;
 	msg[1].flags = I2C_M_RD;
-	msg[1].buf = data;
+	msg[1].buf = data+1;
 
 	err = i2c_transfer(client->adapter, msg, 2);
 
@@ -125,12 +78,12 @@ gc0339_read_reg(struct i2c_client *client, u16 data_length, u8 reg, u8 *val)
 		*val = 0;
 		/* high byte comes first */
 		if (data_length == MISENSOR_8BIT)
-			*val = data[0];
-		else if (data_length == MISENSOR_16BIT)
-			*((u16 *) val) = data[1] + (data[0] << 8);
+			*val = data[1];
+		/*else if (data_length == MISENSOR_16BIT)
+			*val = data[1] + (data[0] << 8);
 		else
-			*((u32 *) val) = data[3] + (data[2] << 8) +
-			    (data[1] << 16) + (data[0] << 24);
+			*val = data[3] + (data[2] << 8) +
+			    (data[1] << 16) + (data[0] << 24);*/
 
 		return 0;
 	}
@@ -171,17 +124,17 @@ again:
 	msg.len = 1 + data_length;
 	msg.buf = data;
 
-/*	high byte goes out first
+	/* high byte goes out first 
 	wreg = (u16 *)data;
-	*wreg = cpu_to_be16(reg);
-*/
+	*wreg = cpu_to_be16(reg);*/
 
-	if (data_length == MISENSOR_8BIT)
+	if (data_length == MISENSOR_8BIT) {
 		data[2] = (u8)(val);
-	/*else if (data_length == MISENSOR_16BIT) {
+	} /*else if (data_length == MISENSOR_16BIT) {
 		u16 *wdata = (u16 *)&data[2];
 		*wdata = be16_to_cpu((u16)val);
 	} else {
+		 MISENSOR_32BIT 
 		u32 *wdata = (u32 *)&data[2];
 		*wdata = be32_to_cpu(val);
 	}*/
@@ -370,6 +323,23 @@ __gc0339_write_reg_is_consecutive(struct i2c_client *client,
 	return ctrl->buffer.addr + ctrl->index == next->reg;
 }
 
+static int gc0339_wait_state(struct i2c_client *client, int timeout)
+{
+	int ret;
+	unsigned int val;
+
+	while (timeout-- > 0) {
+		ret = gc0339_read_reg(client, MISENSOR_16BIT, 0x0080, &val);
+		if (ret)
+			return ret;
+		if ((val & 0x2) == 0)
+			return 0;
+		msleep(20);
+	}
+
+	return -EINVAL;
+}
+
 /*
  * gc0339_write_reg_array - Initializes a list of gc0339 registers
  * @client: i2c driver client structure
@@ -451,34 +421,11 @@ static int gc0339_write_reg_array(struct i2c_client *client,
 	return 0;
 }
 
-static int gc0339_wait_state(struct i2c_client *client, int timeout)
-{
-	int ret;
-	unsigned int val;
-
-	while (timeout-- > 0) {
-		ret = gc0339_read_reg(client, MISENSOR_16BIT, 0x0080, &val);
-		if (ret)
-			return ret;
-		if ((val & 0x2) == 0)
-			return 0;
-		msleep(20);
-	}
-
-	return -EINVAL;
-
-}
-
 static int gc0339_set_suspend(struct v4l2_subdev *sd)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x60, 0x88);
-#ifdef POWER_ALWAYS_ON_BEFORE_SUSPEND
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x69, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0xf6, 0x04);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0xf7, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0xfc, 0x17);
-#endif
+
+	gc0339_write_reg(client, MISENSOR_8BIT,  0x60, 0x80); //10bit raw disable
 
 	return 0;
 }
@@ -487,7 +434,8 @@ static int gc0339_set_streaming(struct v4l2_subdev *sd)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x60, 0x98); /*10bit raw enable*/
+	gc0339_write_reg(client, MISENSOR_8BIT,  0xFE, 0x50); //Wesley_Kao, enable per frame MIPI reset
+	gc0339_write_reg(client, MISENSOR_8BIT,  0x60, 0x98); //10bit raw enable
 
 	return 0;
 }
@@ -495,144 +443,77 @@ static int gc0339_set_streaming(struct v4l2_subdev *sd)
 static int gc0339_init_common(struct v4l2_subdev *sd)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	int ret;
 
-#if 0
-	gc0339_write_reg(client, MISENSOR_8BIT,  0xFC, 0x10);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0xFE, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0xF6, 0x05);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0xF7, 0x01);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0xF7, 0x03);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0xFC, 0x16);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xFE, 0x80);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xFC, 0x10);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xFE, 0x00);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xF6, 0x05);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xF7, 0x01);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xF7, 0x03);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xFC, 0x16);
 
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x06, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x08, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x09, 0x01); /*484*/
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x0A, 0xE8);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x0B, 0x02); /*644*/
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x0C, 0x88);
-
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x01, 0x90); /*DummyHor 144*/
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x02, 0x2F); /*DummyVer 47*/
-
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x0F, 0x00); /*DummyHor 144*/
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x14, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x1A, 0x21);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x1B, 0x08);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x1C, 0x19);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x1D, 0xEA);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x20, 0xb0); /*b0*/
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x2E, 0x30); /*00*/
-
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x30, 0xB7);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x31, 0x7F);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x32, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x39, 0x04);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x3A, 0x20);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x3B, 0x20);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x3C, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x3D, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x3E, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x3F, 0x00);
-
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x62, 0x2e); /*20*/
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x63, 0x03);/*640x10/8=800*/
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x69, 0x03);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x60, 0x80);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x65, 0x20); /*dis continuous*/
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x6C, 0x40);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x6D, 0x01);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x6A, 0x55);
-
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x4A, 0x50);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x4B, 0x40);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x4C, 0x40);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0xE8, 0x04);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0xE9, 0xBB);
-
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x42, 0x20);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x47, 0x10);
-
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x50, 0x60); /*80*/
-
-	gc0339_write_reg(client, MISENSOR_8BIT,  0xD0, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0xD2, 0x00); /*disable AE*/
-	gc0339_write_reg(client, MISENSOR_8BIT,  0xD3, 0x50);
-
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x71, 0x01);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x72, 0x01);
-	gc0339_write_reg(client, MISENSOR_8BIT,  0x79, 0x01);
-#endif
-	/*656x496*/
-	if (0 != (ret = gc0339_write_reg(client, MISENSOR_8BIT, 0xfc, 0x10))) {
-		dev_err(&client->dev, "%s:init common error", __func__);
-		return ret;
-	}
-
-	gc0339_write_reg(client, MISENSOR_8BIT, 0xfe, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0xf6, 0x07);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0xf7, 0x01);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0xf7, 0x03);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0xfc, 0x16);
 	gc0339_write_reg(client, MISENSOR_8BIT, 0x06, 0x00);
 	gc0339_write_reg(client, MISENSOR_8BIT, 0x08, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x09, 0x01);/*498*/
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x0a, 0xf2);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x0b, 0x02);/*660*/
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x0c, 0x94);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x0f, 0x02);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x14, g_flip);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x1a, 0x21);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x1b, 0x08);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x1c, 0x19);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x1d, 0xea);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x09, 0x01); //by Wesley
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x0A, 0xF2); //by Wesley
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x0B, 0x02); //by Wesley
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x0C, 0x94); //by Wesley
 
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x61, 0x2b);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x62, 0x34);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x63, 0x03);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x30, 0xb7);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x31, 0x7f);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x01, 0x90); //DummyHor 144
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x02, 0x31); //Wesley min:0x30
 
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x0F, 0x00); //DummyHor 144
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x14, 0x00);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x1A, 0x21);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x1B, 0x08);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x1C, 0x19);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x1D, 0xEA);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x20, 0xB0);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x2E, 0x00);
+
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x30, 0xB7);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x31, 0x7F);
 	gc0339_write_reg(client, MISENSOR_8BIT, 0x32, 0x00);
 	gc0339_write_reg(client, MISENSOR_8BIT, 0x39, 0x04);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x3a, 0x20);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x3b, 0x20);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x3c, 0x04);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x3d, 0x04);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x3e, 0x04);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x3f, 0x04);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x69, 0x03);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x3A, 0x20);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x3B, 0x20);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x3C, 0x00);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x3D, 0x00);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x3E, 0x00);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x3F, 0x00);
 
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x65, 0x10);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x6c, 0xaa);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x6d, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x67, 0x10);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x4a, 0x40);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x4b, 0x40);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x4c, 0x40);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0xe8, 0x04);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0xe9, 0xbb);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x62, 0x34);  //by Wesley
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x63, 0x03); // by Wesley
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x69, 0x03);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x60, 0x80);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x65, 0x20); //20 -> 21
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x6C, 0x40);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x6D, 0x01);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x6A, 0x34); //BOTH 0x34
+
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x4A, 0x50);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x4B, 0x40);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x4C, 0x40);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xE8, 0x04);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xE9, 0xBB);
+
 	gc0339_write_reg(client, MISENSOR_8BIT, 0x42, 0x20);
 	gc0339_write_reg(client, MISENSOR_8BIT, 0x47, 0x10);
 
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x50, 0x40);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0xd0, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0xd3, 0x50);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0xf6, 0x05);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x01, 0x6a);/* HB[7:0] 106*/
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x02, 0x0c);/*VB[7:0] 12*/
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x0f, 0x00);/*[7:4]VB[11:8];[3:0]HB[11:8]*/
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x6a, 0x11);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x50, 0x80);
+
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xD0, 0x00);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xD2, 0x00); //disable AE
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xD3, 0x50);
+
 	gc0339_write_reg(client, MISENSOR_8BIT, 0x71, 0x01);
 	gc0339_write_reg(client, MISENSOR_8BIT, 0x72, 0x01);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x73, 0x01);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x73, 0x05); //Nor:0x05 DOU:0x06 //clk zero 0x05 //data zero 0x7a=0x0a
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x74, 0x01);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x76, 0x02); //Nor:0x02 DOU:0x03
 	gc0339_write_reg(client, MISENSOR_8BIT, 0x79, 0x01);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x7a, 0x01);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x2e, 0x10);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x2b, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x2c, 0x03);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0xd2, 0x00);
-	gc0339_write_reg(client, MISENSOR_8BIT, 0x20, 0xb0);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x7A, 0x05); //data zero 0x7a default=0x0a
+	gc0339_write_reg(client, MISENSOR_8BIT, 0x7B, 0x02); //Nor:0x02 DOU:0x03
 
 	return 0;
 }
@@ -641,7 +522,6 @@ static int power_up(struct v4l2_subdev *sd)
 {
 	struct gc0339_device *dev = to_gc0339_sensor(sd);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	printk("%s++\n", __func__);
 	int ret;
 
 	if (NULL == dev->platform_data) {
@@ -649,22 +529,20 @@ static int power_up(struct v4l2_subdev *sd)
 		return -ENODEV;
 	}
 
-	/* flis clock control */
-	ret = dev->platform_data->flisclk_ctrl(sd, 1);
-	if (ret)
-		goto fail_clk;
-
 	/* power control */
 	ret = dev->platform_data->power_ctrl(sd, 1);
 	if (ret)
 		goto fail_power;
 
-	usleep_range(5000, 6000);
+	/* flis clock control */
+	ret = dev->platform_data->flisclk_ctrl(sd, 1);
+	if (ret)
+		goto fail_clk;
+
 	/* gpio ctrl */
 	ret = dev->platform_data->gpio_ctrl(sd, 1);
 	if (ret)
 		dev_err(&client->dev, "gpio failed 1\n");
-
 	/*
 	 * according to DS, 44ms is needed between power up and first i2c
 	 * commend
@@ -673,10 +551,10 @@ static int power_up(struct v4l2_subdev *sd)
 
 	return 0;
 
-fail_power:
-	dev->platform_data->power_ctrl(sd, 0);
 fail_clk:
 	dev->platform_data->flisclk_ctrl(sd, 0);
+fail_power:
+	dev->platform_data->power_ctrl(sd, 0);
 	dev_err(&client->dev, "sensor power-up failed\n");
 
 	return ret;
@@ -698,14 +576,17 @@ static int power_down(struct v4l2_subdev *sd)
 	if (ret)
 		dev_err(&client->dev, "gpio failed 1\n");
 
+	msleep(2);
+
+	/* flis clock control */
+	ret = dev->platform_data->flisclk_ctrl(sd, 0);
+	if (ret)
+		dev_err(&client->dev, "flisclk failed\n");
+
 	/* power control */
 	ret = dev->platform_data->power_ctrl(sd, 0);
 	if (ret)
 		dev_err(&client->dev, "vprog failed.\n");
-
-	ret = dev->platform_data->flisclk_ctrl(sd, 0);
-	if (ret)
-		dev_err(&client->dev, "flisclk failed\n");
 
 	/*according to DS, 20ms is needed after power down*/
 	msleep(20);
@@ -715,72 +596,15 @@ static int power_down(struct v4l2_subdev *sd)
 
 static int gc0339_s_power(struct v4l2_subdev *sd, int power)
 {
-	struct gc0339_device *dev = to_gc0339_sensor(sd);
-	int ret = 0;
-	printk("@%s: enable:%d\n", __func__, power);
-	if (power == 0) {
-		ret = power_down(sd);
-		dev->power = 0;
-	} else {
+	if (power == 0)
+		return power_down(sd);
+	else {
 		if (power_up(sd))
 			return -EINVAL;
-		dev->power = 1;
-		ret = gc0339_init_common(sd);
+
+		return gc0339_init_common(sd);
 	}
-
-	return ret;
 }
-
-#ifdef POWER_ALWAYS_ON_BEFORE_SUSPEND
-static int gc0339_sub_init(struct i2c_client *client)
-{
-	int ret = 0;
-
-	ret |= gc0339_write_reg(client, MISENSOR_8BIT, 0x69, 0x03);
-	ret |= gc0339_write_reg(client, MISENSOR_8BIT, 0xf6, 0x05);
-	ret |= gc0339_write_reg(client, MISENSOR_8BIT, 0xf7, 0x01);
-	ret |= gc0339_write_reg(client, MISENSOR_8BIT, 0xf7, 0x03);
-	ret |= gc0339_write_reg(client, MISENSOR_8BIT, 0xfc, 0x16);
-
-	return ret;
-}
-
-static int gc0339_s_power_always_on(struct v4l2_subdev *sd, int power)
-{
-	struct gc0339_device *dev = to_gc0339_sensor(sd);
-	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	int ret = 0;
-
-	if (!dev->second_power_on_at_boot_done) {
-		if (!power) {
-			dev->second_power_on_at_boot_done = 1;
-		}
-		return gc0339_s_power(sd, power);
-	}
-
-	if (power == 0) {
-		//return power_down(sd);
-		// For case camera is stream-on, and then closed without a stream-off.
-		ret = gc0339_set_suspend(sd);
-	} else {
-		if (!dev->power) {
-			if (power_up(sd))
-				return -EINVAL;
-			dev->power = 1;
-			dev->once_launched = 1;
-			ret = gc0339_init_common(sd);
-		} else {
-			//ret = gc0339_init_common(sd);
-			ret = gc0339_sub_init(client);
-			if (ret) {
-				dev_err(&client->dev, "i2c write error for gc0339_sub_init()\n");
-			}
-		}
-	}
-
-	return ret;
-}
-#endif
 
 static int gc0339_try_res(u32 *w, u32 *h)
 {
@@ -795,12 +619,7 @@ static int gc0339_try_res(u32 *w, u32 *h)
 		    (gc0339_res[i].height >= *h))
 			break;
 	}
-	/*
-	* Workaround to choose max resolution(VGA) output for QVGA.
-	* This could ensure VGA/QVGA have same FOV
-	*/
-	if (*w == 320 && *h == 240)
-		i = N_RES - 1;
+
 	/*
 	 * If no mode was found, it means we can provide only a smaller size.
 	 * Returning the biggest one available in this case.
@@ -834,6 +653,7 @@ static struct gc0339_res_struct *gc0339_to_res(u32 w, u32 h)
 static int gc0339_try_mbus_fmt(struct v4l2_subdev *sd,
 				struct v4l2_mbus_framefmt *fmt)
 {
+	//fmt->code = V4L2_MBUS_FMT_SGRBG10_1X10;
 	return gc0339_try_res(&fmt->width, &fmt->height);
 }
 
@@ -843,27 +663,17 @@ static int gc0339_res2size(unsigned int res, int *h_size, int *v_size)
 	unsigned short vsize;
 
 	switch (res) {
-#if 0
-	case GC0339_RES_QCIF:
-		hsize = GC0339_RES_QCIF_SIZE_H;
-		vsize = GC0339_RES_QCIF_SIZE_V;
-		break;
-	case GC0339_RES_QVGA:
-		hsize = GC0339_RES_QVGA_SIZE_H;
-		vsize = GC0339_RES_QVGA_SIZE_V;
-		break;
-#endif
-	case GC0339_RES_CIF:
-		hsize = GC0339_RES_CIF_SIZE_H;
-		vsize = GC0339_RES_CIF_SIZE_V;
-		break;
-	case GC0339_RES_VGA:
-		hsize = GC0339_RES_VGA_SIZE_H;
-		vsize = GC0339_RES_VGA_SIZE_V;
-		break;
-	default:
-		WARN(1, "%s: Resolution 0x%08x unknown\n", __func__, res);
-		return -EINVAL;
+		case GC0339_RES_CIF:
+			hsize = GC0339_RES_CIF_SIZE_H;
+			vsize = GC0339_RES_CIF_SIZE_V;
+			break;
+		case GC0339_RES_VGA:
+			hsize = GC0339_RES_VGA_SIZE_H;
+			vsize = GC0339_RES_VGA_SIZE_V;
+			break;
+		default:
+			WARN(1, "%s: Resolution 0x%08x unknown\n", __func__, res);
+			return -EINVAL;
 	}
 
 	if (h_size != NULL)
@@ -879,24 +689,17 @@ static int gc0339_get_intg_factor(struct i2c_client *client,
 				const struct gc0339_res_struct *res)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
-	struct gc0339_device *dev = to_gc0339_sensor(sd);
 	struct atomisp_sensor_mode_data *buf = &info->data;
 	const unsigned int ext_clk_freq_hz = 19200000;
-	const unsigned int pll_invariant_div = 10;
-	unsigned int pix_clk_freq_hz;
-	u32 pre_pll_clk_div;
-	u32 pll_multiplier;
-	u32 op_pix_clk_div;
 	u8 reg_val;
 	u16 val;
 	int ret;
-	dev_dbg(&client->dev, "%s\n", __func__);
 
 	if (info == NULL)
 		return -EINVAL;
 
 	buf->vt_pix_clk_freq_mhz = ext_clk_freq_hz / 2;
-	dev->vt_pix_clk_freq_mhz = buf->vt_pix_clk_freq_mhz;
+	//printk("vt_pix_clk_freq_mhz = %d\n", buf->vt_pix_clk_freq_mhz);
 
 	/* get integration time */
 	buf->coarse_integration_time_min = GC0339_COARSE_INTG_TIME_MIN;
@@ -914,63 +717,75 @@ static int gc0339_get_intg_factor(struct i2c_client *client,
 	buf->read_mode = res->bin_mode;
 
 	/* get the cropping and output resolution to ISP for this mode. */
-	ret = gc0339_read_reg(client, MISENSOR_8BIT,  REG_H_START, &reg_val);
-	if (ret)
+	ret = gc0339_read_reg(client, MISENSOR_8BIT, REG_H_START, &reg_val);
+	if(ret)
 		return ret;
 	buf->crop_horizontal_start = reg_val;
+	//printk("crop_horizontal_start = %d\n", buf->crop_horizontal_start);
 
-	ret = gc0339_read_reg(client, MISENSOR_8BIT,  REG_V_START, &reg_val);
-	if (ret)
+	ret = gc0339_read_reg(client, MISENSOR_8BIT, REG_V_START, &reg_val);
+	if(ret)
 		return ret;
 	buf->crop_vertical_start = reg_val;
+	//printk("crop_vertical_start = %d\n", buf->crop_vertical_start);
 
-	val = 0;
-	ret = gc0339_read_reg(client, MISENSOR_8BIT,  REG_WIDTH_H, &reg_val);
+	val =0;
+	ret = gc0339_read_reg(client, MISENSOR_8BIT, REG_WIDTH_H, &reg_val);
 	val = reg_val;
 	val = val << 8;
-	ret = gc0339_read_reg(client, MISENSOR_8BIT,  REG_WIDTH_L, &reg_val);
+	ret |= gc0339_read_reg(client, MISENSOR_8BIT, REG_WIDTH_L, &reg_val);
 	val += reg_val;
-	if (ret)
+	if(ret)
 		return ret;
 	buf->output_width = val;
 	buf->crop_horizontal_end = buf->crop_horizontal_start + val - 1;
+	//printk("crop_horizontal_end = %d\n", buf->crop_horizontal_end);
 
-	val = 0;
-	ret = gc0339_read_reg(client, MISENSOR_8BIT,  REG_HEIGHT_H, &reg_val);
+	val =0;
+	ret = gc0339_read_reg(client, MISENSOR_8BIT, REG_HEIGHT_H, &reg_val);
 	val = reg_val;
 	val = val << 8;
-	ret = gc0339_read_reg(client, MISENSOR_8BIT,  REG_HEIGHT_L, &reg_val);
+	ret |= gc0339_read_reg(client, MISENSOR_8BIT, REG_HEIGHT_L, &reg_val);
 	val += reg_val;
-	if (ret)
+	if(ret)
 		return ret;
 	buf->output_height = val;
 	buf->crop_vertical_end = buf->crop_vertical_start + val - 1;
+	//printk("crop_vertical_end = %d\n", buf->crop_vertical_end);
 
-	val = 0;
-	ret = gc0339_read_reg(client, MISENSOR_8BIT,  REG_DUMMY_H, &reg_val);
+	val =0;
+	ret = gc0339_read_reg(client, MISENSOR_8BIT, REG_DUMMY_H, &reg_val);
 	val = reg_val;
-	val = (val & 0x0F) << 8;
-	ret = gc0339_read_reg(client, MISENSOR_8BIT,  REG_H_DUMMY_L, &reg_val);
+	val = (val&0x0F) << 8;
+	ret |= gc0339_read_reg(client, MISENSOR_8BIT, REG_H_DUMMY_L, &reg_val);
 	val += reg_val;
+	//printk("REG_H_DUMMY = %d\n", val);
 
-	ret = gc0339_read_reg(client, MISENSOR_8BIT,  REG_SH_DELAY, &reg_val);
-	if (ret)
+	ret |= gc0339_read_reg(client, MISENSOR_8BIT, REG_SH_DELAY, &reg_val);
+	if(ret)
 		return ret;
+	//printk("REG_SH_DELAY = %d\n", reg_val);
 	val += reg_val;
 	buf->line_length_pck = buf->output_width + val + 4;
+	//printk("line_length_pck = %d\n", buf->line_length_pck);
 
-	val = 0;
-	ret = gc0339_read_reg(client, MISENSOR_8BIT,  REG_DUMMY_H, &reg_val);
+	val =0;
+	ret = gc0339_read_reg(client, MISENSOR_8BIT, REG_DUMMY_H, &reg_val);
 	val = reg_val;
-	val = (val & 0xF0) << 4;
-	ret = gc0339_read_reg(client, MISENSOR_8BIT,  REG_V_DUMMY_L, &reg_val);
+	val = (val&0xF0) << 4;
+	ret |= gc0339_read_reg(client, MISENSOR_8BIT, REG_V_DUMMY_L, &reg_val);
 	val += reg_val;
+	if(ret)
+		return ret;
+	//printk("REG_V_DUMMY = %d\n", val);
 
 	buf->frame_length_lines = buf->output_height + val;
+	//printk("frame_length_lines = %d\n", buf->frame_length_lines);
 
 	buf->read_mode = res->bin_mode;
 	buf->binning_factor_x = 1;
 	buf->binning_factor_y = 1;
+
 	return 0;
 }
 
@@ -981,7 +796,7 @@ static int gc0339_get_mbus_fmt(struct v4l2_subdev *sd,
 	int width, height;
 	int ret;
 
-	fmt->code = V4L2_MBUS_FMT_SGRBG10_1X10;
+	fmt->code = V4L2_MBUS_FMT_SRGGB10_1X10;
 
 	ret = gc0339_res2size(dev->res, &width, &height);
 	if (ret)
@@ -993,7 +808,7 @@ static int gc0339_get_mbus_fmt(struct v4l2_subdev *sd,
 }
 
 static int gc0339_set_mbus_fmt(struct v4l2_subdev *sd,
-				struct v4l2_mbus_framefmt *fmt)
+			      struct v4l2_mbus_framefmt *fmt)
 {
 	struct i2c_client *c = v4l2_get_subdevdata(sd);
 	struct gc0339_device *dev = to_gc0339_sensor(sd);
@@ -1002,24 +817,6 @@ static int gc0339_set_mbus_fmt(struct v4l2_subdev *sd,
 	u32 height = fmt->height;
 	struct camera_mipi_info *gc0339_info = NULL;
 	int ret;
-	u8 date_tem;
-	u8 bayer_order_tem;
-
-	ret = gc0339_read_reg(c, MISENSOR_8BIT, gc0339_CTRL_FLIP_ADDR, &date_tem);
-	if (ret)
-		return ret;
-
-	/*ret = gc0339_s_power(sd, 0);
-	if (ret) {
-		v4l2_err(c, "%s: gc0339 power down err", __func__);
-		return ret;
-	}
-
-	ret = gc0339_s_power(sd, 1);
-	if (ret) {
-		v4l2_err(c, "%s: gc0339 power-up err", __func__);
-		return ret;
-	}*/
 
 	gc0339_info = v4l2_get_subdev_hostdata(sd);
 	if (gc0339_info == NULL)
@@ -1034,40 +831,32 @@ static int gc0339_set_mbus_fmt(struct v4l2_subdev *sd,
 		return -EINVAL;
 	}
 
-#ifdef POWER_ALWAYS_ON_BEFORE_SUSPEND
-	ret = gc0339_sub_init(c);
-	if (ret) {
-		dev_err(&c->dev, "i2c write error for gc0339_sub_init()\n");
-	}
-#endif
-
 	switch (res_index->res) {
 	case GC0339_RES_CIF:
-#if 0
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x15, 0x8A); /*CIF*/
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x62, 0xBD); /*LWC*/
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x63, 0x01);
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x15, 0x8A); //CIF
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x62, 0xCC); //LWC by verrill
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x63, 0x01);
 
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x06, 0x00);
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x08, 0x05);
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x09, 0x01);
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x0A, 0xD0);
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x0B, 0x02);
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x0C, 0x40);
-#endif
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x06, 0x00);
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x08, 0x00);
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x09, 0x01);  // by Wesley
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x0A, 0xE2);  // by Wesley
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x0B, 0x02);  // by Wesley
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x0C, 0x54);  // by Wesley
+		printk("gc0339_set_mbus_fmt: CIF\n");
 		break;
 	case GC0339_RES_VGA:
-/*		gc0339_write_reg(c, MISENSOR_8BIT,  0x15, 0x0A);
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x62, 0x20);
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x63, 0x03);
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x15, 0x0A);
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x62, 0x34); //by verrill
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x63, 0x03); //by verrill
 
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x06, 0x00);
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x08, 0x00); //05
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x09, 0x01); //484
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x0A, 0xE8);
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x0B, 0x02); //644
-		gc0339_write_reg(c, MISENSOR_8BIT,  0x0C, 0x88);
-*/
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x06, 0x00);
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x08, 0x00);
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x09, 0x01); //by Wesley
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x0A, 0xF2); //by Wesley
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x0B, 0x02); //by Wesley
+		gc0339_write_reg(c, MISENSOR_8BIT, 0x0C, 0x94); //by Wesley
+		printk("gc0339_set_mbus_fmt: VGA\n");
 		break;
 	default:
 		v4l2_err(sd, "set resolution: %d failed!\n", res_index->res);
@@ -1089,29 +878,26 @@ static int gc0339_set_mbus_fmt(struct v4l2_subdev *sd,
 
 	fmt->width = width;
 	fmt->height = height;
-	fmt->code = V4L2_MBUS_FMT_SGRBG10_1X10;
+	fmt->code = V4L2_MBUS_FMT_SRGGB10_1X10;
 
-	bayer_order_tem = date_tem & (gc0339_HFLIP_BIT|gc0339_VFLIP_BIT);
-	gc0339_info->raw_bayer_order = gc0339_bayer_order_mapping[bayer_order_tem];
-	dev->format.code = gc0339_translate_bayer_order(gc0339_info->raw_bayer_order);
 	return 0;
 }
 
 /* TODO: Update to SOC functions, remove exposure and gain */
-static int gc0339_g_focal(struct v4l2_subdev *sd, s32 *val)
+static int gc0339_g_focal(struct v4l2_subdev *sd, s32 * val)
 {
 	*val = (GC0339_FOCAL_LENGTH_NUM << 16) | GC0339_FOCAL_LENGTH_DEM;
 	return 0;
 }
 
-static int gc0339_g_fnumber(struct v4l2_subdev *sd, s32 *val)
+static int gc0339_g_fnumber(struct v4l2_subdev *sd, s32 * val)
 {
 	/*const f number for gc0339*/
 	*val = (GC0339_F_NUMBER_DEFAULT_NUM << 16) | GC0339_F_NUMBER_DEM;
 	return 0;
 }
 
-static int gc0339_g_fnumber_range(struct v4l2_subdev *sd, s32 *val)
+static int gc0339_g_fnumber_range(struct v4l2_subdev *sd, s32 * val)
 {
 	*val = (GC0339_F_NUMBER_DEFAULT_NUM << 24) |
 		(GC0339_F_NUMBER_DEM << 16) |
@@ -1120,7 +906,7 @@ static int gc0339_g_fnumber_range(struct v4l2_subdev *sd, s32 *val)
 }
 
 /* Horizontal flip the image. */
-static int gc0339_g_hflip(struct v4l2_subdev *sd, s32 *val)
+static int gc0339_g_hflip(struct v4l2_subdev *sd, s32 * val)
 {
 	struct i2c_client *c = v4l2_get_subdevdata(sd);
 	int ret;
@@ -1130,10 +916,11 @@ static int gc0339_g_hflip(struct v4l2_subdev *sd, s32 *val)
 	if (ret)
 		return ret;
 	*val = !!(data & MISENSOR_HFLIP_MASK);
+
 	return 0;
 }
 
-static int gc0339_g_vflip(struct v4l2_subdev *sd, s32 *val)
+static int gc0339_g_vflip(struct v4l2_subdev *sd, s32 * val)
 {
 	struct i2c_client *c = v4l2_get_subdevdata(sd);
 	int ret;
@@ -1148,7 +935,7 @@ static int gc0339_g_vflip(struct v4l2_subdev *sd, s32 *val)
 	return 0;
 }
 
-static int gc0339_s_freq(struct v4l2_subdev *sd, s32 val)
+static int gc0339_s_freq(struct v4l2_subdev *sd, s32  val)
 {
 	struct i2c_client *c = v4l2_get_subdevdata(sd);
 	struct gc0339_device *dev = to_gc0339_sensor(sd);
@@ -1206,50 +993,32 @@ static long gc0339_s_exposure(struct v4l2_subdev *sd,
 			       struct atomisp_exposure *exposure)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	dev_dbg(&client->dev, "%s: (%d %d %d)\n", __func__,
-			exposure->integration_time[0], exposure->gain[0], exposure->gain[1]);
-
-	int ret = 0;
-
-	struct gc0339_device *dev = to_gc0339_sensor(sd);
-
 	unsigned int coarse_integration = 0;
 	unsigned int AnalogGain, DigitalGain;
-
-	u8 expo_coarse_h, expo_coarse_l;
+	u8 expo_coarse_h,expo_coarse_l;
+	int ret = 0;
 
 	coarse_integration = exposure->integration_time[0];
 	AnalogGain = exposure->gain[0];
 	DigitalGain = exposure->gain[1];
 
-#if 1
-/*	0X40 	  1X gain*/
-/* 	IQ gain 64 ~ 677 */
-	int temp;
-	int ratio;
-	if (AnalogGain < 256) {
-		gc0339_write_reg(client, MISENSOR_8BIT, REG_GLOBAL_GAIN, BASE_GLOBAL_GAIN_VALUE);
-		gc0339_write_reg(client, MISENSOR_8BIT, REG_GAIN, (AnalogGain & 0xff));
-	} else {
-		ratio = (BASE_GLOBAL_GAIN_VALUE << 8) / 64;
-		temp = (AnalogGain * ratio * 64 / 255 + (1 << 8)) >> 8;
-		if (temp > 0xff)
-			temp = 0xff;
-		gc0339_write_reg(client, MISENSOR_8BIT, REG_GLOBAL_GAIN, (temp & 0xff));
-		gc0339_write_reg(client, MISENSOR_8BIT, REG_GAIN, 0xff);
-	}
-#endif
-
-	expo_coarse_h = (u8)(coarse_integration >> 8);
+	expo_coarse_h = (u8)(coarse_integration>>8);
 	expo_coarse_l = (u8)(coarse_integration & 0xff);
 
-
 	ret = gc0339_write_reg(client, MISENSOR_8BIT, REG_EXPO_COARSE, expo_coarse_h);
-	ret = gc0339_write_reg(client, MISENSOR_8BIT, REG_EXPO_COARSE+1, expo_coarse_l);
-
+	ret |= gc0339_write_reg(client, MISENSOR_8BIT, REG_EXPO_COARSE + 1, expo_coarse_l);
 	if (ret) {
-		 v4l2_err(client, "%s: fail to set exposure time\n", __func__);
-		 return -EINVAL;
+	    	 v4l2_err(client, "%s: fail to set exposure time\n", __func__);
+	    	 return -EINVAL;
+	}
+
+	//if (DigitalGain >= 16 || DigitalGain <= 1)
+	//	DigitalGain = 1;
+
+	ret = gc0339_write_reg(client, MISENSOR_8BIT, REG_GAIN, AnalogGain);
+	if (ret) {
+	     	v4l2_err(client, "%s: fail to set AnalogGainToWrite\n", __func__);
+	     	return -EINVAL;
 	}
 
 	return ret;
@@ -1263,6 +1032,7 @@ static long gc0339_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 	default:
 		return -EINVAL;
 	}
+
 	return 0;
 }
 
@@ -1273,148 +1043,58 @@ static int gc0339_g_exposure(struct v4l2_subdev *sd, s32 *value)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	u16 coarse;
-	u8 reg_val_h, reg_val_l;
+	u8 reg_val_h,reg_val_l;
 	int ret;
 
 	/* the fine integration time is currently not calculated */
 	ret = gc0339_read_reg(client, MISENSOR_8BIT,
-				MISENSOR_COARSE_INTEGRATION_TIME_H, &reg_val_h);
+			       MISENSOR_COARSE_INTEGRATION_TIME_H, &reg_val_h);
 	if (ret)
 		return ret;
 
 	coarse = ((u16)(reg_val_h & 0x0f)) << 8;
 
 	ret = gc0339_read_reg(client, MISENSOR_8BIT,
-				MISENSOR_COARSE_INTEGRATION_TIME_L, &reg_val_l);
+			       MISENSOR_COARSE_INTEGRATION_TIME_L, &reg_val_l);
 	if (ret)
 		return ret;
 
 	coarse |= reg_val_l;
 
 	*value = coarse;
+
 	return 0;
 }
 
-static int gc0339_s_ctrl(struct v4l2_ctrl *ctrl)
-{
-	struct gc0339_device *dev = container_of(
-		ctrl->handler, struct gc0339_device, ctrl_handler);
-	struct i2c_client *client = v4l2_get_subdevdata(&dev->sd);
-	int ret = 0;
-
-	switch (ctrl->id) {
-	case V4L2_CID_VFLIP:
-		dev_dbg(&client->dev, "%s: CID_VFLIP:%d.\n", __func__, ctrl->val);
-		ret = gc0339_t_vflip(&dev->sd, ctrl->val);
-		break;
-	case V4L2_CID_HFLIP:
-		dev_dbg(&client->dev, "%s: CID_HFLIP:%d.\n", __func__, ctrl->val);
-		ret = gc0339_t_hflip(&dev->sd, ctrl->val);
-		break;
-	}
-
-	return ret;
-}
-
-static int gc0339_g_ctrl(struct v4l2_ctrl *ctrl)
-{
-	struct gc0339_device *dev = container_of(
-		ctrl->handler, struct gc0339_device, ctrl_handler);
-	struct i2c_client *client = v4l2_get_subdevdata(&dev->sd);
-	int ret = 0;
-
-	switch (ctrl->id) {
-	case V4L2_CID_EXPOSURE_ABSOLUTE:
-		ret = gc0339_g_exposure(&dev->sd, &ctrl->val);
-		break;
-	case V4L2_CID_FOCAL_ABSOLUTE:
-		ret = gc0339_g_focal(&dev->sd, &ctrl->val);
-		break;
-	case V4L2_CID_FNUMBER_ABSOLUTE:
-		ret = gc0339_g_fnumber(&dev->sd, &ctrl->val);
-		break;
-	case V4L2_CID_FNUMBER_RANGE:
-		ret = gc0339_g_fnumber_range(&dev->sd, &ctrl->val);
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	return ret;
-}
-static const struct v4l2_ctrl_ops ctrl_ops = {
-	.s_ctrl = gc0339_s_ctrl,
-	.g_volatile_ctrl = gc0339_g_ctrl
-};
-
-struct v4l2_ctrl_config gc0339_controls[] = {
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_EXPOSURE_ABSOLUTE,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "exposure",
-		.min = 0x0,
-		.max = 0xffff,
-		.step = 0x01,
-		.def = 0x00,
-		.flags = V4L2_CTRL_FLAG_VOLATILE,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_VFLIP,
-		.type = V4L2_CTRL_TYPE_BOOLEAN,
-		.name = "Flip",
-		.min = 0,
-		.max = 1,
-		.step = 1,
-		.def = 0,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_HFLIP,
-		.type = V4L2_CTRL_TYPE_BOOLEAN,
-		.name = "Mirror",
-		.min = 0,
-		.max = 1,
-		.step = 1,
-		.def = 0,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_FOCAL_ABSOLUTE,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "focal length",
-		.min = GC0339_FOCAL_LENGTH_DEFAULT,
-		.max = GC0339_FOCAL_LENGTH_DEFAULT,
-		.step = 0x01,
-		.def = GC0339_FOCAL_LENGTH_DEFAULT,
-		.flags = V4L2_CTRL_FLAG_VOLATILE,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_FNUMBER_ABSOLUTE,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "f-number",
-		.min = GC0339_F_NUMBER_DEFAULT,
-		.max = GC0339_F_NUMBER_DEFAULT,
-		.step = 0x01,
-		.def = GC0339_F_NUMBER_DEFAULT,
-		.flags = V4L2_CTRL_FLAG_VOLATILE,
-	},
-	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_FNUMBER_RANGE,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "f-number range",
-		.min = GC0339_F_NUMBER_RANGE,
-		.max =  GC0339_F_NUMBER_RANGE,
-		.step = 0x01,
-		.def = GC0339_F_NUMBER_RANGE,
-		.flags = V4L2_CTRL_FLAG_VOLATILE,
-	},
-};
-#if 0
 static struct gc0339_control gc0339_controls[] = {
+/*
+	{
+		.qc = {
+			.id = V4L2_CID_VFLIP,
+			.type = V4L2_CTRL_TYPE_INTEGER,
+			.name = "Image v-Flip",
+			.minimum = 0,
+			.maximum = 1,
+			.step = 1,
+			.default_value = 0,
+		},
+		.query = gc0339_g_vflip,
+		.tweak = gc0339_t_vflip,
+	},
+	{
+		.qc = {
+			.id = V4L2_CID_HFLIP,
+			.type = V4L2_CTRL_TYPE_INTEGER,
+			.name = "Image h-Flip",
+			.minimum = 0,
+			.maximum = 1,
+			.step = 1,
+			.default_value = 0,
+		},
+		.query = gc0339_g_hflip,
+		.tweak = gc0339_t_hflip,
+	},
+*/
 	{
 		.qc = {
 			.id = V4L2_CID_FOCAL_ABSOLUTE,
@@ -1495,32 +1175,6 @@ static struct gc0339_control gc0339_controls[] = {
 		.query = gc0339_g_exposure,
 	},
 
-	{
-		.qc = {
-			.id = V4L2_CID_VFLIP,
-			.type = V4L2_CTRL_TYPE_INTEGER,
-			.name = "Image v-Flip",
-			.minimum = 0,
-			.maximum = 1,
-			.step = 1,
-			.default_value = 0,
-			.flags = 0,
-		},
-			.tweak = gc0339_t_vflip,
-	},
-	{
-		.qc = {
-			.id = V4L2_CID_HFLIP,
-			.type = V4L2_CTRL_TYPE_INTEGER,
-			.name = "Image h-Flip",
-			.minimum = 0,
-			.maximum = 1,
-			.step = 1,
-			.default_value = 0,
-			.flags = 0,
-		},
-		.tweak = gc0339_t_hflip,
-	},
 };
 #define N_CONTROLS (ARRAY_SIZE(gc0339_controls))
 
@@ -1534,7 +1188,7 @@ static struct gc0339_control *gc0339_find_control(__u32 id)
 	}
 	return NULL;
 }
-#endif
+
 static int gc0339_detect(struct gc0339_device *dev, struct i2c_client *client)
 {
 	struct i2c_adapter *adapter = client->adapter;
@@ -1544,16 +1198,24 @@ static int gc0339_detect(struct gc0339_device *dev, struct i2c_client *client)
 		dev_err(&client->dev, "%s: i2c error", __func__);
 		return -ENODEV;
 	}
+
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xFE, 0x80); //sw reset
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xFC, 0x10); //clock enable
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xF6, 0x05); //pll mode
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xF7, 0x01);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xF7, 0x03);
+	gc0339_write_reg(client, MISENSOR_8BIT, 0xFC, 0x16);
+
 	gc0339_read_reg(client, MISENSOR_8BIT, (u8)GC0339_PID, &retvalue);
 	dev->real_model_id = retvalue;
-	printk("detect module ID = %x\n", retvalue);
-#if 1
+	printk("detect module ID = %x\n",retvalue);
+
 	if (retvalue != GC0339_MOD_ID) {
-		dev_err(&client->dev, "%s: failed: client->addr = %x\n",
-			__func__, client->addr);
+                dev_err(&client->dev, "%s: failed: client->addr = %x\n",
+                                __func__, client->addr);
 		return -ENODEV;
 	}
-#endif
+
 	return 0;
 }
 
@@ -1577,26 +1239,11 @@ gc0339_s_config(struct v4l2_subdev *sd, int irq, void *platform_data)
 			return ret;
 		}
 	}
-
-	/* power off the module, then power on it in future
-	 * as first power on by board may not fulfill the
-	 * power on sequqence needed by the module
-	 */
-	ret = gc0339_s_power(sd, 0);
-	if (ret) {
-		v4l2_err(client, "gc0339 power-off err");
-		return ret;
-	}
-
-	ret = gc0339_s_power(sd, 1);
+	ret = power_up(sd);
 	if (ret) {
 		v4l2_err(client, "gc0339 power-up err");
-		goto  fail_detect;
+		return ret;
 	}
-
-	ret = dev->platform_data->csi_cfg(sd, 1);
-	if (ret)
-		goto fail_csi_cfg;
 
 	/* config & detect sensor */
 	ret = gc0339_detect(dev, client);
@@ -1604,20 +1251,18 @@ gc0339_s_config(struct v4l2_subdev *sd, int irq, void *platform_data)
 		v4l2_err(client, "gc0339_detect err s_config.\n");
 		goto fail_detect;
 	}
-/*
-	ret = gc0339_init_common(sd);
-	if (ret) {
-		v4l2_err(client, "gc0339_init_common err s_config.\n");
-		goto fail_detect;
-	}
-*/
+
+	ret = dev->platform_data->csi_cfg(sd, 1);
+	if (ret)
+		goto fail_csi_cfg;
+
 	ret = gc0339_set_suspend(sd);
 	if (ret) {
 		v4l2_err(client, "gc0339 suspend err");
 		return ret;
 	}
 
-	ret = gc0339_s_power(sd, 0);
+	ret = power_down(sd);
 	if (ret) {
 		v4l2_err(client, "gc0339 power down err");
 		return ret;
@@ -1628,11 +1273,11 @@ gc0339_s_config(struct v4l2_subdev *sd, int irq, void *platform_data)
 fail_csi_cfg:
 	dev->platform_data->csi_cfg(sd, 0);
 fail_detect:
-	gc0339_s_power(sd, 0);
+	power_down(sd);
 	dev_err(&client->dev, "sensor power-gating failed\n");
 	return ret;
 }
-#if 0
+
 static int gc0339_queryctrl(struct v4l2_subdev *sd, struct v4l2_queryctrl *qc)
 {
 	struct gc0339_control *ctrl = gc0339_find_control(qc->id);
@@ -1642,141 +1287,91 @@ static int gc0339_queryctrl(struct v4l2_subdev *sd, struct v4l2_queryctrl *qc)
 	*qc = ctrl->qc;
 	return 0;
 }
-#endif
+
+
 /* Horizontal flip the image. */
 static int gc0339_t_hflip(struct v4l2_subdev *sd, int value)
 {
-	struct camera_mipi_info *gc0339_info = NULL;
 	struct i2c_client *c = v4l2_get_subdevdata(sd);
 	struct gc0339_device *dev = to_gc0339_sensor(sd);
 	int err;
-	u8 date_tem;
-	u8 bayer_order_tem;
-	date_tem = g_flip;
-	dev_err(&c->dev, "@%s++ %d, 0x14:0x%x\n", __func__, value, date_tem);
+
 	/* set for direct mode */
-	//err = gc0339_read_reg(c, MISENSOR_8BIT, gc0339_CTRL_FLIP_ADDR, &date_tem);
-	if (value)
-		date_tem |= gc0339_HFLIP_BIT;
-	else
-		date_tem &= ~gc0339_HFLIP_BIT;
-	err = gc0339_write_reg(c, MISENSOR_8BIT, gc0339_CTRL_FLIP_ADDR, date_tem);
+	err = gc0339_write_reg(c, MISENSOR_16BIT, 0x098E, 0xC850);
+	if (value) {
+		/* enable H flip ctx A */
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC850, 0x01, 0x01);
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC851, 0x01, 0x01);
+		/* ctx B */
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC888, 0x01, 0x01);
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC889, 0x01, 0x01);
+
+		err += misensor_rmw_reg(c, MISENSOR_16BIT, MISENSOR_READ_MODE,
+					MISENSOR_HFLIP_MASK, MISENSOR_FLIP_EN);
+
+		dev->bpat = GC0339_BPAT_GRGRBGBG;
+	} else {
+		/* disable H flip ctx A */
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC850, 0x01, 0x00);
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC851, 0x01, 0x00);
+		/* ctx B */
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC888, 0x01, 0x00);
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC889, 0x01, 0x00);
+
+		err += misensor_rmw_reg(c, MISENSOR_16BIT, MISENSOR_READ_MODE,
+					MISENSOR_HFLIP_MASK, MISENSOR_FLIP_DIS);
+
+		dev->bpat = GC0339_BPAT_BGBGGRGR;
+	}
+
+	err += gc0339_write_reg(c, MISENSOR_8BIT, 0x8404, 0x06);
 	udelay(10);
-	if (err)   return err;
-	g_flip = date_tem;
-	gc0339_info = v4l2_get_subdev_hostdata(sd);
-        if (gc0339_info) 
-        {
-                bayer_order_tem = date_tem & (gc0339_HFLIP_BIT|gc0339_VFLIP_BIT);
-                gc0339_info->raw_bayer_order = gc0339_bayer_order_mapping[bayer_order_tem];
-                dev->format.code = gc0339_translate_bayer_order(gc0339_info->raw_bayer_order);
-        }
+
 	return !!err;
 }
 
 /* Vertically flip the image */
 static int gc0339_t_vflip(struct v4l2_subdev *sd, int value)
 {
-	struct camera_mipi_info *gc0339_info = NULL;
 	struct i2c_client *c = v4l2_get_subdevdata(sd);
-	struct gc0339_device *dev = to_gc0339_sensor(sd);
 	int err;
-	u8 date_tem;
-	u8 bayer_order_tem;
-	date_tem = g_flip;
-	dev_err(&c->dev, "@%s++ %d, 0x14:0x%x\n", __func__, value, date_tem);
+
 	/* set for direct mode */
-	//err = gc0339_read_reg(c, MISENSOR_8BIT, gc0339_CTRL_FLIP_ADDR, &date_tem);
-	if (value)	
-		date_tem |= gc0339_VFLIP_BIT;
-	else
-		date_tem &= ~gc0339_VFLIP_BIT;
-	err = gc0339_write_reg(c, MISENSOR_8BIT, gc0339_CTRL_FLIP_ADDR, date_tem);
+	err = gc0339_write_reg(c, MISENSOR_16BIT, 0x098E, 0xC850);
+	if (value >= 1) {
+		/* enable H flip - ctx A */
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC850, 0x02, 0x01);
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC851, 0x02, 0x01);
+		/* ctx B */
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC888, 0x02, 0x01);
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC889, 0x02, 0x01);
+
+		err += misensor_rmw_reg(c, MISENSOR_16BIT, MISENSOR_READ_MODE,
+					MISENSOR_VFLIP_MASK, MISENSOR_FLIP_EN);
+	} else {
+		/* disable H flip - ctx A */
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC850, 0x02, 0x00);
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC851, 0x02, 0x00);
+		/* ctx B */
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC888, 0x02, 0x00);
+		err += misensor_rmw_reg(c, MISENSOR_8BIT, 0xC889, 0x02, 0x00);
+
+		err += misensor_rmw_reg(c, MISENSOR_16BIT, MISENSOR_READ_MODE,
+					MISENSOR_VFLIP_MASK, MISENSOR_FLIP_DIS);
+	}
+
+	err += gc0339_write_reg(c, MISENSOR_8BIT, 0x8404, 0x06);
 	udelay(10);
-	if (err)   return err;
-	g_flip = date_tem;
-	gc0339_info = v4l2_get_subdev_hostdata(sd);
-        if (gc0339_info) {
-		bayer_order_tem = date_tem & (gc0339_HFLIP_BIT|gc0339_VFLIP_BIT);
-		gc0339_info->raw_bayer_order = gc0339_bayer_order_mapping[bayer_order_tem];
-		dev->format.code = gc0339_translate_bayer_order(gc0339_info->raw_bayer_order);
-        }
+
 	return !!err;
 }
 
 static int gc0339_s_parm(struct v4l2_subdev *sd,
 			struct v4l2_streamparm *param)
 {
-#if 0
-	struct ov2722_device *dev = to_ov2722_sensor(sd);
-	dev->run_mode = param->parm.capture.capturemode;
-
-	mutex_lock(&dev->input_lock);
-	switch (dev->run_mode) {
-	case CI_MODE_VIDEO:
-		ov2722_res = ov2722_res_video;
-		N_RES = N_RES_VIDEO;
-		break;
-	case CI_MODE_STILL_CAPTURE:
-		ov2722_res = ov2722_res_still;
-		N_RES = N_RES_STILL;
-		break;
-	default:
-		ov2722_res = ov2722_res_preview;
-		N_RES = N_RES_PREVIEW;
-	}
-	mutex_unlock(&dev->input_lock);
-	#endif
 	return 0;
 }
 
-int
-gc0339_g_frame_interval(struct v4l2_subdev *sd,
-				struct v4l2_subdev_frame_interval *interval)
-{
-	struct gc0339_device *dev = to_gc0339_sensor(sd);
-	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	u16 lines_per_frame;
-	/*
-	 * if no specific information to calculate the fps,
-	 * just used the value in sensor settings
-	 */
-
-	if (!gc0339_res[dev->res].pixels_per_line || !gc0339_res[dev->res].lines_per_frame) {
-		interval->interval.numerator = 1;
-		interval->interval.denominator = gc0339_res[dev->res].fps;
-		return 0;
-	}
-
-	/*
-	 * DS: if coarse_integration_time is set larger than
-	 * lines_per_frame the frame_size will be expanded to
-	 * coarse_integration_time+1
-	 */
-#if 0
-	if (dev->coarse_itg > dev->lines_per_frame) {
-		if ((dev->coarse_itg + 4) < dev->coarse_itg) {
-			/*
-			 * we can not add 4 according to ds, as this will
-			 * cause over flow
-			 */
-			v4l2_warn(client, "%s: abnormal coarse_itg:0x%x\n",
-				  __func__, dev->coarse_itg);
-			lines_per_frame = dev->coarse_itg;
-		} else {
-			lines_per_frame = dev->coarse_itg + 4;
-		}
-	} else {
-		lines_per_frame = dev->lines_per_frame;
-	}
-#endif
-	interval->interval.numerator = gc0339_res[dev->res].pixels_per_line *
-					gc0339_res[dev->res].lines_per_frame;
-	interval->interval.denominator = dev->vt_pix_clk_freq_mhz;
-
-	return 0;
-}
-#if 0
 static int gc0339_g_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 {
 	struct gc0339_control *octrl = gc0339_find_control(ctrl->id);
@@ -1799,27 +1394,22 @@ static int gc0339_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 
 	if (!octrl || !octrl->tweak)
 		return -EINVAL;
+
 	ret = octrl->tweak(sd, ctrl->value);
 	if (ret < 0)
 		return ret;
 
 	return 0;
 }
-#endif
+
 static int gc0339_s_stream(struct v4l2_subdev *sd, int enable)
 {
-	int ret = 0;
-	struct i2c_client *c = v4l2_get_subdevdata(sd);
-	struct gc0339_device *dev = to_gc0339_sensor(sd);
-	printk("@%s: enable:%d\n", __func__, enable);
-	if (enable && dev->streaming != 1) {
-		printk("gc0339_s_stream: Stream On\n");
+	int ret;
+
+	if (enable) {
 		ret = gc0339_set_streaming(sd);
-		dev->streaming = 1;
-	} else if (!enable) {
-		printk("gc0339_s_stream: Stream Off\n");
+	} else {
 		ret = gc0339_set_suspend(sd);
-		dev->streaming = 0;
 	}
 
 	return ret;
@@ -1885,7 +1475,7 @@ static int gc0339_enum_mbus_code(struct v4l2_subdev *sd,
 	if (code->index)
 		return -EINVAL;
 
-	code->code = V4L2_MBUS_FMT_SGRBG10_1X10;
+	code->code = V4L2_MBUS_FMT_SRGGB10_1X10;
 
 	return 0;
 }
@@ -1991,7 +1581,6 @@ static const struct v4l2_subdev_video_ops gc0339_video_ops = {
 	.enum_framesizes = gc0339_enum_framesizes,
 	.enum_frameintervals = gc0339_enum_frameintervals,
 	.s_parm = gc0339_s_parm,
-	.g_frame_interval = gc0339_g_frame_interval,
 };
 
 static struct v4l2_subdev_sensor_ops gc0339_sensor_ops = {
@@ -2000,14 +1589,10 @@ static struct v4l2_subdev_sensor_ops gc0339_sensor_ops = {
 
 static const struct v4l2_subdev_core_ops gc0339_core_ops = {
 	.g_chip_ident = gc0339_g_chip_ident,
-	.queryctrl = v4l2_subdev_queryctrl,
-	.g_ctrl = v4l2_subdev_g_ctrl,
-	.s_ctrl = v4l2_subdev_s_ctrl,
-#ifdef POWER_ALWAYS_ON_BEFORE_SUSPEND
-	.s_power = gc0339_s_power_always_on,
-#else
+	.queryctrl = gc0339_queryctrl,
+	.g_ctrl = gc0339_g_ctrl,
+	.s_ctrl = gc0339_s_ctrl,
 	.s_power = gc0339_s_power,
-#endif
 	.ioctl = gc0339_ioctl,
 };
 
@@ -2030,45 +1615,22 @@ static const struct media_entity_operations gc0339_entity_ops = {
 	.link_setup = NULL,
 };
 
-
 static int gc0339_remove(struct i2c_client *client)
 {
-	struct gc0339_device *dev;
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct gc0339_device *dev = to_gc0339_sensor(sd);
 
-	dev = container_of(sd, struct gc0339_device, sd);
 	dev->platform_data->csi_cfg(sd, 0);
 	if (dev->platform_data->platform_deinit)
 		dev->platform_data->platform_deinit();
-	v4l2_ctrl_handler_free(&dev->ctrl_handler);
 	v4l2_device_unregister_subdev(sd);
 	media_entity_cleanup(&dev->sd.entity);
 	kfree(dev);
 	return 0;
 }
 
-static int __gc0339_init_ctrl_handler(struct gc0339_device *dev)
-{
-	struct v4l2_ctrl_handler *hdl;
-	int i;
-
-	hdl = &dev->ctrl_handler;
-
-	v4l2_ctrl_handler_init(&dev->ctrl_handler, ARRAY_SIZE(gc0339_controls));
-
-	for (i = 0; i < ARRAY_SIZE(gc0339_controls); i++)
-		v4l2_ctrl_new_custom(&dev->ctrl_handler,
-				&gc0339_controls[i], NULL);
-
-	dev->ctrl_handler.lock = &dev->input_lock;
-	dev->sd.ctrl_handler = hdl;
-	v4l2_ctrl_handler_setup(&dev->ctrl_handler);
-
-	return 0;
-}
-
 static int gc0339_probe(struct i2c_client *client,
-				const struct i2c_device_id *id)
+		       const struct i2c_device_id *id)
 {
 	struct gc0339_device *dev;
 	int ret;
@@ -2079,12 +1641,8 @@ static int gc0339_probe(struct i2c_client *client,
 		dev_err(&client->dev, "out of memory\n");
 		return -ENOMEM;
 	}
-	mutex_init(&dev->input_lock);
 
 	v4l2_i2c_subdev_init(&dev->sd, client, &gc0339_ops);
-
-	dev->second_power_on_at_boot_done = 0;
-	dev->once_launched = 0;
 
 	if (client->dev.platform_data) {
 		ret = gc0339_s_config(&dev->sd, client->irq,
@@ -2096,17 +1654,10 @@ static int gc0339_probe(struct i2c_client *client,
 		}
 	}
 
-	ret = __gc0339_init_ctrl_handler(dev);
-	if (ret) {
-		v4l2_ctrl_handler_free(&dev->ctrl_handler);
-		v4l2_device_unregister_subdev(&dev->sd);
-		kfree(dev);
-		return ret;
-	}
 	/*TODO add format code here*/
 	dev->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	dev->pad.flags = MEDIA_PAD_FL_SOURCE;
-	dev->format.code = V4L2_MBUS_FMT_SGRBG10_1X10;
+	dev->format.code = V4L2_MBUS_FMT_SRGGB10_1X10;
 	dev->sd.entity.type = MEDIA_ENT_T_V4L2_SUBDEV_SENSOR;
 
 	/* REVISIT: Do we need media controller? */
@@ -2122,59 +1673,12 @@ static int gc0339_probe(struct i2c_client *client,
 	return 0;
 }
 
-#ifdef POWER_ALWAYS_ON_BEFORE_SUSPEND
-static int gc0339_suspend(struct device *dev)
-{
-	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
-	struct v4l2_subdev *sd = i2c_get_clientdata(client);
-	struct gc0339_device *gc_dev = to_gc0339_sensor(sd);
-	int ret = 0;
-
-	//printk("%s() in\n", __func__);
-
-	if (gc_dev->once_launched) {
-		ret = gc0339_s_power(sd, 0);
-		if (ret) {
-			v4l2_err(client, "gc0339 power-down err.\n");
-		}
-	}
-
-	return 0;
-}
-
-static int gc0339_resume(struct device *dev)
-{
-	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
-	struct v4l2_subdev *sd = i2c_get_clientdata(client);
-	struct gc0339_device *gc_dev = to_gc0339_sensor(sd);
-	int ret = 0;
-
-	//printk("%s() in\n", __func__);
-
-	if (gc_dev->once_launched) {
-		ret = gc0339_s_power(sd, 1);
-		if (ret) {
-			v4l2_err(client, "gc0339 power-up err.\n");
-		}
-
-		ret = gc0339_set_suspend(sd);
-	}
-
-	return 0;
-}
-
-SIMPLE_DEV_PM_OPS(gc0339_pm_ops, gc0339_suspend, gc0339_resume);
-#endif
-
 MODULE_DEVICE_TABLE(i2c, gc0339_id);
 
 static struct i2c_driver gc0339_driver = {
 	.driver = {
 		.owner = THIS_MODULE,
-		.name = "gc0339",
-#ifdef POWER_ALWAYS_ON_BEFORE_SUSPEND
-		.pm = &gc0339_pm_ops,
-#endif
+		.name = "gc0339"
 	},
 	.probe = gc0339_probe,
 	.remove = gc0339_remove,
@@ -2194,5 +1698,5 @@ static __exit void exit_gc0339(void)
 module_init(init_gc0339);
 module_exit(exit_gc0339);
 
-MODULE_AUTHOR("Qi Jing <qix.jing@intel.com>");
+MODULE_AUTHOR("Shuguang Gong <Shuguang.gong@intel.com>");
 MODULE_LICENSE("GPL");

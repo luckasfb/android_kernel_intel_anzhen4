@@ -15,9 +15,7 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/types.h>
-#ifndef CONFIG_GMIN_INTEL_MID /* FIXME! for non-gmin*/
 #include <media/v4l2-chip-ident.h>
-#endif
 #include <media/v4l2-device.h>
 #include <asm/intel-mid.h>
 
@@ -145,8 +143,8 @@ int drv201_t_focus_abs(struct v4l2_subdev *sd, s32 value)
 {
 	int ret;
 
-	value = clamp(value, 0, DRV201_MAX_FOCUS_POS);
-	ret = drv201_t_focus_vcm(sd, value);
+	value = min(value, DRV201_MAX_FOCUS_POS);
+	ret = drv201_t_focus_vcm(sd, DRV201_MAX_FOCUS_POS - value);
 	if (ret == 0) {
 		drv201_dev.number_of_steps = value - drv201_dev.focus;
 		drv201_dev.focus = value;
