@@ -109,17 +109,6 @@ config VIDEO_GC0310
 
          It currently only works with the atomisp driver.
 
-config VIDEO_GC2235
-       tristate "Galaxy gc2235 sensor support"
-       depends on I2C && VIDEO_V4L2
-       ---help---
-         This is a Video4Linux2 sensor-level driver for the OVT
-         GC2235 raw camera.
-
-         GC2235 is a 2M raw sensor.
-
-         It currently only works with the atomisp driver.
-
 config VIDEO_HM2056
        tristate "Himax hm2056 sensor support"
        depends on I2C && VIDEO_V4L2

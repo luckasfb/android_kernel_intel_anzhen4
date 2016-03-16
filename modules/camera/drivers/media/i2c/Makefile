@@ -33,8 +33,6 @@ CFLAGS_s5k8aay.o += -Werror
 obj-$(CONFIG_VIDEO_HM2056)     += hm2056.o
 obj-$(CONFIG_VIDEO_GC0339)     += gc0339.o
 obj-$(CONFIG_VIDEO_GC0310)     += gc0310.o
-obj-$(CONFIG_VIDEO_GC2235)     += gc2235.o
-obj-$(CONFIG_VIDEO_GC2235)     += gc2235f.o
 
 obj-$(CONFIG_VIDEO_MSRLIST_HELPER) += libmsrlisthelper.o
 CFLAGS_libmsrlisthelper.o += -Werror
