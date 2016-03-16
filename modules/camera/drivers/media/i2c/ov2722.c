@@ -393,13 +393,16 @@ static long __ov2722_set_exposure(struct v4l2_subdev *sd, int coarse_itg,
 				 int gain, int digitgain)
 
 {
+	struct ov2722_device *dev = to_ov2722_sensor(sd);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	u16 vts;
 	int frame_length;
 	int ret;
+	int temp;
+
 
 	ret = ov2722_read_reg(client, OV2722_16BIT,
-					OV2722_VTS_DIFF_H, &vts);
+					0x380E, &vts);
 	if (ret)
 		return ret;
 
@@ -416,7 +419,7 @@ static long __ov2722_set_exposure(struct v4l2_subdev *sd, int coarse_itg,
 		return ret;
 
 	ret = ov2722_write_reg(client, OV2722_16BIT,
-				OV2722_VTS_DIFF_H, frame_length >> 8);
+				OV2722_VTS_DIFF_H, frame_length);
 	if (ret)
 		return ret;
 
@@ -440,21 +443,33 @@ static long __ov2722_set_exposure(struct v4l2_subdev *sd, int coarse_itg,
 		return ret;
 
 	/* set digital gain */
-	ret = ov2722_write_reg(client, OV2722_16BIT,
-				OV2722_MWB_GAIN_R_H, digitgain);
-	if (ret)
-		return ret;
+	if (digitgain != dev->pre_digitgain){
+		dev->pre_digitgain = digitgain;
+		temp = digitgain*(dev->R_gain)>>10;
+		if (temp >= 0x400){
+			ret = ov2722_write_reg(client, OV2722_16BIT,
+					OV2722_MWB_GAIN_R_H, temp);
+			if (ret)
+				return ret;
+		}
 
-	ret = ov2722_write_reg(client, OV2722_16BIT,
-				OV2722_MWB_GAIN_G_H, digitgain);
-	if (ret)
-		return ret;
+		temp = digitgain*(dev->G_gain)>>10;
 
-	ret = ov2722_write_reg(client, OV2722_16BIT,
-				OV2722_MWB_GAIN_B_H, digitgain);
-	if (ret)
-		return ret;
+		if (temp >= 0x400){
+			ret = ov2722_write_reg(client, OV2722_16BIT,
+					OV2722_MWB_GAIN_G_H, temp);
+			if (ret)
+				return ret;
+		}
 
+		temp = digitgain*(dev->B_gain)>>10;
+		if (temp >= 0x400){
+			ret = ov2722_write_reg(client, OV2722_16BIT,
+					OV2722_MWB_GAIN_B_H, temp);
+			if (ret)
+				return ret;
+		}
+	}
 	/* group hold end */
 	ret = ov2722_write_reg(client, OV2722_8BIT,
 					OV2722_GROUP_ACCESS, 0x10);
@@ -663,13 +678,19 @@ static int ov2722_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 static int ov2722_init(struct v4l2_subdev *sd)
 {
 	struct ov2722_device *dev = to_ov2722_sensor(sd);
-
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	mutex_lock(&dev->input_lock);
 
 	/* restore settings */
 	ov2722_res = ov2722_res_preview;
 	N_RES = N_RES_PREVIEW;
 
+	int ret = ov2722_write_reg_array(client, ov2722_BaseInit);
+	if (ret) {
+		dev_err(&client->dev, "ov2722 write register err.\n");
+		mutex_unlock(&dev->input_lock);
+		return ret;
+	}
 	mutex_unlock(&dev->input_lock);
 
 	return 0;
@@ -752,21 +773,321 @@ static int power_down(struct v4l2_subdev *sd)
 	if (ret)
 		dev_err(&client->dev, "vprog failed.\n");
 
+	dev->pre_digitgain = 0;
+
 	return ret;
+}
+
+int RG_Ratio_Typical  = 0x160;//fix me: copy from #1 malata board module
+int BG_Ratio_Typical = 0x194;
+struct otp_struct {
+	u16 module_integrator_id;
+	u16 lens_id;
+	u16 rg_ratio;
+	u16 bg_ratio;
+	u16 user_data[2];
+	u16 mix;
+	u16 light_rg;
+	u16 light_bg;
+};
+
+// index: index of otp group. (0, 1)
+// return:0, group index is empty
+// 1, group index has invalid data
+// 2, group index has valid data
+static int check_otp(struct i2c_client *client, int index)
+{
+	u16 temp, i;
+	u16 address;
+
+	// clear otp buffer
+	for (i = 0; i < 32; i++)
+		ov2722_write_reg(client, OV2722_8BIT, 0x3d00 + i, 0x00);
+
+	// read otp into buffer
+	ov2722_write_reg(client, OV2722_8BIT, 0x3d81, 0x01);
+	msleep(10);
+
+	address = 0x3d05 + index*9;
+	ov2722_read_reg(client, OV2722_8BIT, address, &temp);
+
+	// disable otp read
+	ov2722_write_reg(client, OV2722_8BIT, 0x3d81, 0x00);
+
+	// clear otp buffer
+	for (i = 0; i < 32; i++)
+		ov2722_write_reg(client, OV2722_8BIT, 0x3d00 + i, 0x00);
+
+	if (!temp)
+		return 0;
+	else if ((!(temp & 0x80)) && (temp&0x7f))
+		return 2;
+	else
+		return 1;
+}
+
+// index: index of otp group. (0, 1, 2)
+// otp_ptr: pointer of otp_struct
+// return: 	0,
+static int read_otp(struct i2c_client *client, int index,
+			struct otp_struct *otp_ptr)
+{
+	int i;
+	int address;
+
+	// read otp into buffer
+	ov2722_write_reg(client, OV2722_8BIT, 0x3d81, 0x01);
+	mdelay(10);
+
+	//address = 0x3d05 + index*9;
+	address = 0x3d00;
+	ov2722_read_reg(client, OV2722_8BIT, address + 5,
+			&((*otp_ptr).module_integrator_id));
+	(*otp_ptr).module_integrator_id = (*otp_ptr).module_integrator_id & 0x7f;
+	v4l2_info(client, "read_otp_wb (*otp_ptr).module_integrator_id=%x \n", (*otp_ptr).module_integrator_id);
+
+	ov2722_read_reg(client, OV2722_8BIT, address + 6, &((*otp_ptr).lens_id));
+	v4l2_info(client, "read_otp_wb (*otp_ptr).lens_id=%x \n", (*otp_ptr).lens_id);
+	ov2722_read_reg(client, OV2722_8BIT, address + 0xb, &((*otp_ptr).mix));
+	v4l2_info(client, "read_otp_wb (*otp_ptr).mix=%x \n", (*otp_ptr).mix);
+
+	ov2722_read_reg(client, OV2722_8BIT, address + 7, &((*otp_ptr).rg_ratio));
+	(*otp_ptr).rg_ratio = ((*otp_ptr).rg_ratio << 2) + (((*otp_ptr).mix >> 6) & 0x03);
+	v4l2_info(client, "read_otp_wb (*otp_ptr).rg_ratio=%x \n", (*otp_ptr).rg_ratio);
+	ov2722_read_reg(client, OV2722_8BIT, address + 8, &((*otp_ptr).bg_ratio));
+	(*otp_ptr).bg_ratio = ((*otp_ptr).bg_ratio << 2) + (((*otp_ptr).mix >> 4) & 0x03);
+	v4l2_info(client, "read_otp_wb (*otp_ptr).bg_ratio=%x \n", (*otp_ptr).bg_ratio);
+
+	ov2722_read_reg(client, OV2722_8BIT, address + 9, &((*otp_ptr).user_data[0]));
+	v4l2_info(client, "read_otp_wb (*otp_ptr).user_data[0]=%x \n", (*otp_ptr).user_data[0]);
+	ov2722_read_reg(client, OV2722_8BIT, address + 0xa, &((*otp_ptr).user_data[1]));
+	v4l2_info(client, "read_otp_wb (*otp_ptr).user_data[1]=%x \n", (*otp_ptr).user_data[1]);
+	ov2722_read_reg(client, OV2722_8BIT, address + 0xc, &((*otp_ptr).light_rg));
+	(*otp_ptr).light_rg = ((*otp_ptr).light_rg << 2) + (((*otp_ptr).mix >>2) & 0x03);
+	v4l2_info(client, "read_otp_wb (*otp_ptr).light_rg=%x \n", (*otp_ptr).light_rg);
+
+	ov2722_read_reg(client, OV2722_8BIT, address + 0xd, &((*otp_ptr).light_bg));
+	(*otp_ptr).light_bg = ((*otp_ptr).light_bg << 2) + ((*otp_ptr).mix & 0x03);
+	v4l2_info(client, "read_otp_wb (*otp_ptr).light_bg=%x \n", (*otp_ptr).light_bg);
+
+	// disable otp read
+	ov2722_write_reg(client, OV2722_8BIT, 0x3d81, 0x00);
+
+	// clear otp buffer
+	for (i = 0; i < 16; i++)
+		ov2722_write_reg(client, OV2722_8BIT, 0x3d00 + i, 0x00);
+
+	v4l2_info(client, "exit read_otp_wb \n");
+	return 0;
+}
+
+// R_gain, sensor red gain of AWB, 0x400 =1
+// G_gain, sensor green gain of AWB, 0x400 =1
+// B_gain, sensor blue gain of AWB, 0x400 =1
+// return 0;
+static int update_awb_gain(struct i2c_client *client, int R_gain,
+				int G_gain, int B_gain)
+{
+	if (R_gain > 0x400) {
+		v4l2_info(client, "  (R_gain>0x400)\n");
+		ov2722_write_reg(client, OV2722_8BIT, 0x5186, R_gain>>8);
+		ov2722_write_reg(client, OV2722_8BIT, 0x5187, R_gain & 0x00ff);
+	}
+
+	if (G_gain > 0x400) {
+		v4l2_info(client, "  (G_gain>0x400)\n");
+		ov2722_write_reg(client, OV2722_8BIT, 0x5188, G_gain>>8);
+		ov2722_write_reg(client, OV2722_8BIT, 0x5189, G_gain & 0x00ff);
+	}
+
+	if (B_gain > 0x400) {
+		v4l2_info(client, "  (B_gain>0x400)\n");
+		ov2722_write_reg(client, OV2722_8BIT, 0x518a, B_gain>>8);
+		ov2722_write_reg(client, OV2722_8BIT, 0x518b, B_gain & 0x00ff);
+	}
+
+	return 0;
+}
+
+// call this function after OV2722 initialization
+// return value: 0 update success
+//		1, no OTP
+static int update_otp(struct v4l2_subdev *sd)
+{
+	struct otp_struct current_otp;
+	struct ov2722_device *dev = to_ov2722_sensor(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	int i;
+	int otp_index;
+	int temp;
+	int R_gain, G_gain, B_gain, G_gain_R, G_gain_B;
+	int rg, bg;
+
+	ov2722_write_reg(client, OV2722_8BIT, 0x4202, 0x0f);
+	ov2722_write_reg(client, OV2722_8BIT, 0x0100, 0x01);
+
+	// R/G and B/G of current camera module is read out from sensor OTP
+	// check first OTP with valid data
+	for (i = 0; i < 2; i++) {
+		temp = check_otp(client, i);
+		if (temp == 2) {
+			otp_index = i;
+			break;
+		}
+	}
+
+	if (i == 2) {
+		// no valid wb OTP data
+		return 1;
+	}
+
+	read_otp(client, otp_index, &current_otp);
+
+	if (current_otp.light_rg == 0) {
+		// no light source information in OTP
+		rg = current_otp.rg_ratio;
+	} else {
+		// light source information found in OTP
+		rg = current_otp.rg_ratio * (current_otp.light_rg + 512) / 1024;
+	}
+
+	if (current_otp.light_bg == 0) {
+		// no light source information in OTP
+		bg = current_otp.bg_ratio;
+	} else {
+		// light source information found in OTP
+		bg = current_otp.bg_ratio * (current_otp.light_bg + 512) / 1024;
+	}
+
+    rg = rg == 0 ? 1 : rg;
+    bg = bg == 0 ? 1 : bg;
+
+	//calculate G gain
+	//0x400 = 1x gain
+	if (bg < BG_Ratio_Typical) {
+		if (rg < RG_Ratio_Typical) {
+			// current_otp.bg_ratio < BG_Ratio_typical &&
+			// current_otp.rg_ratio < RG_Ratio_typical
+			G_gain = 0x400;
+			B_gain = 0x400 * BG_Ratio_Typical / bg;
+			R_gain = 0x400 * RG_Ratio_Typical / rg;
+		} else {
+			// current_otp.bg_ratio < BG_Ratio_typical &&
+			// current_otp.rg_ratio >= RG_Ratio_typical
+			R_gain = 0x400;
+			G_gain = 0x400 * rg / RG_Ratio_Typical;
+			B_gain = G_gain * BG_Ratio_Typical / bg;
+		}
+	} else {
+		if (rg < RG_Ratio_Typical) {
+			// current_otp.bg_ratio >= BG_Ratio_typical &&
+			// current_otp.rg_ratio < RG_Ratio_typical
+			B_gain = 0x400;
+			G_gain = 0x400 * bg / BG_Ratio_Typical;
+			R_gain = G_gain * RG_Ratio_Typical / rg;
+		} else {
+			// current_otp.bg_ratio >= BG_Ratio_typical &&
+			// current_otp.rg_ratio >= RG_Ratio_typical
+			G_gain_B = 0x400 * bg / BG_Ratio_Typical;
+			G_gain_R = 0x400 * rg / RG_Ratio_Typical;
+			if (G_gain_B > G_gain_R) {
+				B_gain = 0x400;
+				G_gain = G_gain_B;
+				R_gain = G_gain * RG_Ratio_Typical / rg;
+			} else {
+				R_gain = 0x400;
+				G_gain = G_gain_R;
+				B_gain = G_gain * BG_Ratio_Typical / bg;
+			}
+		}
+	}
+	dev->R_gain = R_gain;
+	dev->G_gain = G_gain;
+	dev->B_gain = B_gain;
+	//update_awb_gain(client, R_gain, G_gain, B_gain);
+
+	ov2722_write_reg(client, OV2722_8BIT, 0x4202, 0x00);
+	ov2722_write_reg(client, OV2722_8BIT, 0x0100, 0x00);
+
+	return 0;
 }
 
 static int ov2722_s_power(struct v4l2_subdev *sd, int on)
 {
+
 	int ret;
 	if (on == 0)
 		return power_down(sd);
 	else {
 		ret = power_up(sd);
-		if (!ret)
-			return ov2722_init(sd);
+		if (!ret) {
+			update_otp(sd);
+			ov2722_init(sd);
+			return 0;
+		}
 	}
 	return ret;
 }
+
+#ifdef POWER_ALWAYS_ON_BEFORE_SUSPEND
+static int ov2722_set_suspend(struct v4l2_subdev *sd)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	int ret = 0;
+
+	ret = ov2722_write_reg(client, OV2722_8BIT, 0x0100, 0x00);
+	if (ret) {
+		dev_err(&client->dev, "ov2722 write err.\n");
+	}
+
+	return ret;
+}
+
+static int ov2722_sub_init(struct i2c_client *client)
+{
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	update_otp(sd);
+	ov2722_init(sd);
+	return 0;
+}
+
+static int ov2722_s_power_always_on(struct v4l2_subdev *sd, int on)
+{
+	struct ov2722_device *dev = to_ov2722_sensor(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	int ret = 0;
+
+	if (!dev->second_power_on_at_boot_done) {
+		if (!on) {
+			dev->second_power_on_at_boot_done = 1;
+		}
+		return ov2722_s_power(sd, on);
+	}
+
+	if (on == 0) {
+		//ret = power_down(sd);
+		//dev->power = 0;
+		// For case camera is stream-on, and then closed without a stream-off.
+		ret = ov2722_set_suspend(sd);
+	} else {
+		if (!dev->power) {
+			ret = power_up(sd);
+			if (!ret) {
+				dev->power = 1;
+				dev->once_launched = 1;
+				return ov2722_sub_init(client);
+			}
+		} else {
+			ret = ov2722_sub_init(client);
+			if (ret) {
+				dev_err(&client->dev, "i2c write error for ov2722_sub_init()\n");
+			}
+		}
+	}
+
+	return ret;
+}
+#endif
 
 /*
  * distance - calculate the distance
@@ -860,19 +1181,12 @@ static int ov2722_try_mbus_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
-/* TODO: remove it. */
+
 static int startup(struct v4l2_subdev *sd)
 {
 	struct ov2722_device *dev = to_ov2722_sensor(sd);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int ret = 0;
-
-	ret = ov2722_write_reg(client, OV2722_8BIT,
-					OV2722_SW_RESET, 0x01);
-	if (ret) {
-		dev_err(&client->dev, "ov2722 reset err.\n");
-		return ret;
-	}
 
 	ret = ov2722_write_reg_array(client, ov2722_res[dev->fmt_idx].regs);
 	if (ret) {
@@ -913,8 +1227,8 @@ static int ov2722_s_mbus_fmt(struct v4l2_subdev *sd,
 	ret = startup(sd);
 	if (ret) {
 		dev_err(&client->dev, "ov2722 startup err\n");
-		goto err;
-	}
+        goto err;
+    }
 
 	ret = ov2722_get_intg_factor(client, ov2722_info,
 					&ov2722_res[dev->fmt_idx]);
@@ -986,9 +1300,6 @@ static int ov2722_s_stream(struct v4l2_subdev *sd, int enable)
 	ret = ov2722_write_reg(client, OV2722_8BIT, OV2722_SW_STREAM,
 				enable ? OV2722_START_STREAMING :
 				OV2722_STOP_STREAMING);
-	/* restore settings */
-	ov2722_res = ov2722_res_preview;
-	N_RES = N_RES_PREVIEW;
 
 	mutex_unlock(&dev->input_lock);
 	return ret;
@@ -1051,6 +1362,14 @@ static int ov2722_s_config(struct v4l2_subdev *sd,
 		(struct camera_sensor_platform_data *)platform_data;
 
 	mutex_lock(&dev->input_lock);
+	if (dev->platform_data->platform_init) {
+		ret = dev->platform_data->platform_init(client);
+		if (ret) {
+			dev_err(&client->dev, "platform init err\n");
+			goto platform_init_failed;
+		}
+	}
+
 	/* power off the module, then power on it in future
 	 * as first power on by board may not fulfill the
 	 * power on sequqence needed by the module
@@ -1094,6 +1413,9 @@ fail_power_on:
 	power_down(sd);
 	dev_err(&client->dev, "sensor power-gating failed\n");
 fail_power_off:
+	if (dev->platform_data->platform_deinit)
+		dev->platform_data->platform_deinit();
+platform_init_failed:
 	mutex_unlock(&dev->input_lock);
 	return ret;
 }
@@ -1267,7 +1589,11 @@ static const struct v4l2_subdev_video_ops ov2722_video_ops = {
 };
 
 static const struct v4l2_subdev_core_ops ov2722_core_ops = {
+#ifdef POWER_ALWAYS_ON_BEFORE_SUSPEND
+	.s_power = ov2722_s_power_always_on,
+#else
 	.s_power = ov2722_s_power,
+#endif
 	.queryctrl = ov2722_queryctrl,
 	.g_ctrl = ov2722_g_ctrl,
 	.s_ctrl = ov2722_s_ctrl,
@@ -1293,6 +1619,9 @@ static int ov2722_remove(struct i2c_client *client)
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov2722_device *dev = to_ov2722_sensor(sd);
 	dev_dbg(&client->dev, "ov2722_remove...\n");
+
+	if (dev->platform_data->platform_deinit)
+		dev->platform_data->platform_deinit();
 
 	dev->platform_data->csi_cfg(sd, 0);
 
@@ -1320,6 +1649,11 @@ static int ov2722_probe(struct i2c_client *client,
 	dev->fmt_idx = 0;
 	v4l2_i2c_subdev_init(&(dev->sd), client, &ov2722_ops);
 
+#ifdef POWER_ALWAYS_ON_BEFORE_SUSPEND
+	dev->second_power_on_at_boot_done = 0;
+	dev->once_launched = 0;
+#endif
+
 	if (client->dev.platform_data) {
 		ret = ov2722_s_config(&dev->sd, client->irq,
 				       client->dev.platform_data);
@@ -1343,11 +1677,58 @@ out_free:
 	return ret;
 }
 
+#ifdef POWER_ALWAYS_ON_BEFORE_SUSPEND
+static int ov2722_suspend(struct device *dev)
+{
+	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct ov2722_device *ov_dev = to_ov2722_sensor(sd);
+	int ret = 0;
+
+	//printk("%s() in\n", __func__);
+
+	if (ov_dev->once_launched) {
+		ret = ov2722_s_power(sd, 0);
+		if (ret) {
+			v4l2_err(client, "ov2722 power-down err.\n");
+		}
+	}
+
+	return 0;
+}
+
+static int ov2722_resume(struct device *dev)
+{
+	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct ov2722_device *ov_dev = to_ov2722_sensor(sd);
+	int ret = 0;
+
+	//printk("%s() in\n", __func__);
+
+	if (ov_dev->once_launched) {
+		ret = ov2722_s_power(sd, 1);
+		if (ret) {
+			v4l2_err(client, "ov2722 power-up err.\n");
+		}
+
+		ret = ov2722_set_suspend(sd);
+	}
+
+	return 0;
+}
+
+SIMPLE_DEV_PM_OPS(ov2722_pm_ops, ov2722_suspend, ov2722_resume);
+#endif
+
 MODULE_DEVICE_TABLE(i2c, ov2722_id);
 static struct i2c_driver ov2722_driver = {
 	.driver = {
 		.owner = THIS_MODULE,
 		.name = OV2722_NAME,
+#ifdef POWER_ALWAYS_ON_BEFORE_SUSPEND
+		.pm = &ov2722_pm_ops,
+#endif
 	},
 	.probe = ov2722_probe,
 	.remove = ov2722_remove,

@@ -1,7 +1,7 @@
 /*
  * Support for gc0310 Camera Sensor.
  *
- * Copyright (c) 2013 ASUSTeK COMPUTER INC. All Rights Reserved.
+ * Copyright (c) 2012 Intel Corporation. All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License version
@@ -19,8 +19,9 @@
  *
  */
 
-#ifndef __GC0310_H__
-#define __GC0310_H__
+
+#ifndef __gc0310_H__
+#define __gc0310_H__
 
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -36,10 +37,7 @@
 #include <linux/atomisp_platform.h>
 #include <linux/atomisp.h>
 
-#define V4L2_IDENT_GC0310 8245
-
-#define MT9P111_REV3
-#define FULLINISUPPORT
+#define V4L2_IDENT_gc0310 8245
 
 /* #defines for register writes and register array processing */
 #define MISENSOR_8BIT		1
@@ -83,34 +81,21 @@
 #define MISENSOR_COARSE_INTEGRATION_TIME_H 0x03
 #define MISENSOR_COARSE_INTEGRATION_TIME_L 0x04
 
-//registers
-#define REG_SW_RESET                    0x301A
-#define REG_SW_STREAM                   0xDC00
-#define REG_SCCB_CTRL                   0x3100
-#define REG_SC_CMMN_CHIP_ID             0x0000
-#define REG_V_START                     (0x0A)
-#define REG_H_START                     (0x0C)
-#define REG_WIDTH_H                     (0x0F)
-#define REG_WIDTH_L                     (0x10)
-#define REG_HEIGHT_H                    (0x0D)
-#define REG_HEIGHT_L                    (0x0E)
-#define REG_SH_DELAY                    (0x11)
-#define GC0310_REG_HB_H                 (0x05)
-#define GC0310_REG_HB_L                 (0x06)
-#define GC0310_REG_VB_H                 (0x07)
-#define GC0310_REG_VB_L                 (0x08)
-#define REG_DUMMY_H                     0x0F
-#define REG_H_DUMMY_L                     0x01
-#define REG_V_DUMMY_L                     0x02
-#define REG_PIXEL_CLK                   0xc808
-#define REG_TIMING_VTS                  0xc812
-#define REG_TIMING_HTS                  0xc814
-#define REG_EXPO_COARSE                 0x03
-#define REG_EXPO_FINE                   0x3014
-#define REG_GAIN                        0x50
-#define REG_ANALOGGAIN                  0x305F
-#define REG_ADDR_ACESSS                 0x098E
-#define REG_COMM_Register               0x0080
+/*registers*/
+#define REG_V_START                     0x0a    //  06
+#define REG_H_START                     0x0c   //  08
+#define REG_WIDTH_H                      0x0f //  0b
+#define REG_WIDTH_L                      0x10   //0c
+#define REG_HEIGHT_H                      0x0d   //  09
+#define REG_HEIGHT_L                      0x0e   // 0a
+#define REG_SH_DELAY                     0x11    //12 
+#define REG_DUMMY_H                     0x05    //  0f
+#define REG_H_DUMMY_L                     0x06   // 01
+#define REG_V_DUMMY_H                     0x07
+#define REG_V_DUMMY_L                     0x08  //  02 
+#define REG_EXPO_COARSE                 0x03   //  03
+#define REG_GLOBAL_GAIN                 0x70   // 50 
+#define REG_GAIN                        0x71   //51
 
 #define SENSOR_DETECTED		1
 #define SENSOR_NOT_DETECTED	0
@@ -122,7 +107,7 @@
 #define MIPI_CONTROL		0x3400	/* MIPI_Control */
 #endif
 
-//Consistent value
+/*Consistent value*/
 #define VALUE_V_START                     0
 #define VALUE_H_START                     0
 #define VALUE_V_END                       480
@@ -139,50 +124,44 @@
 #define GPIO_RESET_PIN		50
 
 /* System control register for Aptina A-1040SOC*/
-#define GC0310_PID		0x0
-
-/* gc0310's register for low-byte of ID */
-#define GC0310_ID_LOW_BYTE_ADDR  (0xf1)
-
-/* gc0310's register for high-byte of ID */
-#define GC0310_ID_HIGH_BYTE_ADDR  (0xf0)
+#define gc0310_PID		0xf0
 
 /* MT9P111_DEVICE_ID */
-#define GC0310_MOD_ID		0xc8
+#define gc0310_MOD_ID		0xa3
 
-/* GC0310_DEVICE_ID */
-#define GC_0310_DEVICE_ID  (0xa310)
-
-#define GC0310_FINE_INTG_TIME_MIN 0
-#define GC0310_FINE_INTG_TIME_MAX_MARGIN 0
-#define GC0310_COARSE_INTG_TIME_MIN 1
-#define GC0310_COARSE_INTG_TIME_MAX_MARGIN 6
+#define gc0310_FINE_INTG_TIME_MIN 0
+#define gc0310_FINE_INTG_TIME_MAX_MARGIN 0
+#define gc0310_COARSE_INTG_TIME_MIN 1
+#define gc0310_COARSE_INTG_TIME_MAX_MARGIN 6
+#define GC0310_IMG_ORIENTATION			0x17
+#define GC0310_VFLIP_BIT			2
+#define GC0310_HFLIP_BIT			1
 
 /* ulBPat; */
 
-#define GC0310_BPAT_RGRGGBGB	(1 << 0)
-#define GC0310_BPAT_GRGRBGBG	(1 << 1)
-#define GC0310_BPAT_GBGBRGRG	(1 << 2)
-#define GC0310_BPAT_BGBGGRGR	(1 << 3)
+#define gc0310_BPAT_RGRGGBGB	(1 << 0)
+#define gc0310_BPAT_GRGRBGBG	(1 << 1)
+#define gc0310_BPAT_GBGBRGRG	(1 << 2)
+#define gc0310_BPAT_BGBGGRGR	(1 << 3)
 
-#define GC0310_FOCAL_LENGTH_NUM	208	/*2.08mm*/
-#define GC0310_FOCAL_LENGTH_DEM	100
-#define GC0310_F_NUMBER_DEFAULT_NUM	24
-#define GC0310_F_NUMBER_DEM	10
-#define GC0310_WAIT_STAT_TIMEOUT	100
-#define GC0310_FLICKER_MODE_50HZ	1
-#define GC0310_FLICKER_MODE_60HZ	2
+#define gc0310_FOCAL_LENGTH_NUM	208	/*2.08mm*/
+#define gc0310_FOCAL_LENGTH_DEM	100
+#define gc0310_F_NUMBER_DEFAULT_NUM	24
+#define gc0310_F_NUMBER_DEM	10
+#define gc0310_WAIT_STAT_TIMEOUT	100
+#define gc0310_FLICKER_MODE_50HZ	1
+#define gc0310_FLICKER_MODE_60HZ	2
 /*
  * focal length bits definition:
  * bits 31-16: numerator, bits 15-0: denominator
  */
-#define GC0310_FOCAL_LENGTH_DEFAULT 0xD00064
+#define gc0310_FOCAL_LENGTH_DEFAULT 0xD00064
 
 /*
  * current f-number bits definition:
  * bits 31-16: numerator, bits 15-0: denominator
  */
-#define GC0310_F_NUMBER_DEFAULT 0x18000a
+#define gc0310_F_NUMBER_DEFAULT 0x18000a
 
 /*
  * f-number range bits definition:
@@ -191,22 +170,22 @@
  * bits 15-8: min f-number numerator
  * bits 7-0: min f-number denominator
  */
-#define GC0310_F_NUMBER_RANGE 0x180a180a
+#define gc0310_F_NUMBER_RANGE 0x180a180a
 
+#define BASE_GLOBAL_GAIN_VALUE 0x60
 /* Supported resolutions */
 enum {
-	GC0310_RES_CIF,
-	GC0310_RES_VGA,
+	gc0310_RES_VGA,
 };
 
-#define GC0310_RES_VGA_SIZE_H		640
-#define GC0310_RES_VGA_SIZE_V		480
-#define GC0310_RES_CIF_SIZE_H		 	352
-#define GC0310_RES_CIF_SIZE_V			288
-#define GC0310_RES_QVGA_SIZE_H		320
-#define GC0310_RES_QVGA_SIZE_V		240
-#define GC0310_RES_QCIF_SIZE_H		176
-#define GC0310_RES_QCIF_SIZE_V		144
+#define gc0310_RES_VGA_SIZE_H		640
+#define gc0310_RES_VGA_SIZE_V		480
+#define gc0310_RES_CIF_SIZE_H		352
+#define gc0310_RES_CIF_SIZE_V		288
+#define gc0310_RES_QVGA_SIZE_H		320
+#define gc0310_RES_QVGA_SIZE_V		240
+#define gc0310_RES_QCIF_SIZE_H		176
+#define gc0310_RES_QCIF_SIZE_V		144
 
 /* completion status polling requirements, usage based on Aptina .INI Rev2 */
 enum poll_reg {
@@ -301,8 +280,6 @@ struct gc0310_device {
 	char name[32];
 
 	u8 lightfreq;
-
-       struct attribute_group sensor_i2c_attribute; //Add for ATD read camera status+++
 };
 
 struct gc0310_format_struct {
@@ -334,12 +311,12 @@ struct gc0310_control {
 };
 
 /* 2 bytes used for address: 256 bytes total */
-#define GC0310_MAX_WRITE_BUF_SIZE	254
+#define gc0310_MAX_WRITE_BUF_SIZE	254
 struct gc0310_write_buffer {
 	u16 addr;
-	u8 data[GC0310_MAX_WRITE_BUF_SIZE];
+	u8 data[gc0310_MAX_WRITE_BUF_SIZE];
 };
-                
+
 struct gc0310_write_ctrl {
 	int index;
 	struct gc0310_write_buffer buffer;
@@ -350,36 +327,36 @@ struct gc0310_write_ctrl {
  * Please, keep them in ascending order.
  */
 static struct gc0310_res_struct gc0310_res[] = {
-/*
-	{
+#if 0
+{
 	.desc	= "CIF",
-	.res	= GC0310_RES_CIF,
-	.width	= 368,
-	.height	= 304,
+	.res	= gc0310_RES_CIF,
+	.width	= 352,
+	.height	= 288,
 	.fps	= 30,
 	.used	= 0,
 	.regs	= NULL,
 	.skip_frames = 1,
 
-	.pixels_per_line = 0x01F0, // consistent with regs arrays
-	.lines_per_frame = 0x014F, // consistent with regs arrays
+	.pixels_per_line = 0x01F0,
+	.lines_per_frame = 0x014F,
 	.bin_factor_x = 1,
 	.bin_factor_y = 1,
 	.bin_mode = 0,
 	},
-*/
+#endif
 	{
 	.desc	= "VGA",
-	.res	= GC0310_RES_VGA,
+	.res	= gc0310_RES_VGA,
 	.width	= 656,
 	.height	= 496,
 	.fps	= 16.7,
 	.used	= 0,
 	.regs	= NULL,
-	.skip_frames = 3,
+	.skip_frames = 2,
 
-	.pixels_per_line = 0x03e8, // consistent with regs arrays
-	.lines_per_frame = 0x0223, // consistent with regs arrays
+	.pixels_per_line = 0x03e8,
+	.lines_per_frame = 0x0240,
 	.bin_factor_x = 1,
 	.bin_factor_y = 1,
 	.bin_mode = 0,
